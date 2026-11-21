@@ -24,16 +24,17 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def without_installer_path(current, before, binary_dir):
-    def key(entry):
-        return entry.strip().replace('/', '\\').rstrip('\\').casefold()
+def remove_windows_installation(run, installer, env):
+    run('uninstall', installer, child_env=env | {'RETYPE_ACTION': 'remove'})
 
+
+def without_installer_path(current, before, binary_dir):
     if current is None:
-        return before if not before else None
-    owned = key(str(binary_dir))
-    if any(key(entry) == owned for entry in (before or '').split(';')):
+        return None
+    owned = str(binary_dir).casefold()
+    if any(entry.casefold() == owned for entry in (before or '').split(';')):
         return current
-    entries = [entry for entry in current.split(';') if key(entry) != owned]
+    entries = [entry for entry in current.split(';') if entry.casefold() != owned]
     return None if not entries and before is None else ';'.join(entries)
 
 
@@ -140,7 +141,7 @@ def main():
         config.write_text("version = 'retype-config-1'\n[notify]\nenabled = false\n[deferral]\nmode = 'now'\n")
         env = os.environ.copy()
         for key in ['RETYPE_DAEMON', 'RETYPE_NO_SPAWN', 'RETYPE_STATE_DIR', 'RETYPE_FIDELITY_MANIFEST',
-                    'RETYPE_FIXTURES', 'RETYPE_TEST_SESSION', 'RETYPE_STARTUP']:
+                    'RETYPE_FIXTURES', 'RETYPE_TEST_SESSION', 'RETYPE_STARTUP', 'RETYPE_ACTION']:
             env.pop(key, None)
         env['RETYPE_CONFIG'] = str(config)
         env['RETYPE_STATE_DIR'] = str(state)
@@ -163,8 +164,9 @@ def main():
             else:
                 os.killpg(process.pid, signal.SIGKILL)
 
-        def run(label, command, success=True, timeout=40):
-            process = subprocess.Popen([str(part) for part in command], cwd=work, env=env, stdin=subprocess.DEVNULL,
+        def run(label, command, success=True, timeout=40, *, child_env=None):
+            process = subprocess.Popen([str(part) for part in command], cwd=work,
+                                       env=env if child_env is None else child_env, stdin=subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
             processes.append(process)
             try:
@@ -239,10 +241,14 @@ def main():
                     before = json.loads(original_path)
                     restored = without_installer_path(current, before, binary.parent)
                     if restored != current:
-                        env['RETYPE_TEST_USER_PATH_RESTORED'] = json.dumps(restored)
                         run('restore-owned-user-path', ['pwsh', '-NoProfile', '-NonInteractive', '-Command',
+                            "$before = $env:RETYPE_TEST_USER_PATH_BEFORE | ConvertFrom-Json; "
+                            "if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $before) "
+                            "{ throw 'User PATH changed; refusing fixture cleanup replacement.' }; "
                             "$value = $env:RETYPE_TEST_USER_PATH_RESTORED | ConvertFrom-Json; "
-                            "[Environment]::SetEnvironmentVariable('Path', $value, 'User')"])
+                            "[Environment]::SetEnvironmentVariable('Path', $value, 'User')"],
+                            child_env=env | {'RETYPE_TEST_USER_PATH_BEFORE': json.dumps(current),
+                                             'RETYPE_TEST_USER_PATH_RESTORED': json.dumps(restored)})
                     verified = json.loads(user_path('user-path-cleaned'))
                     if without_installer_path(before, None, binary.parent) == before:
                         assert without_installer_path(verified, None, binary.parent) == verified, \
@@ -349,9 +355,15 @@ def main():
                 uri_undo('offline URI exact HEIC undo', job, offline, expected)
                 check('offline URI does not spawn daemon', not (state / 'endpoint').exists())
             journal = (state / 'jobs.jsonl').read_bytes()
-            uninstall = [*installer, '-Uninstall'] if windows else [
-                'bash', repo / 'packaging/install.sh', '--uninstall', '--prefix', prefix]
-            run('uninstall', uninstall)
+            if windows:
+                current = json.loads(user_path('user-path-before-uninstall'))
+                expected_path = without_installer_path(current, json.loads(original_path), binary.parent)
+                remove_windows_installation(run, installer, env)
+                removed_path = json.loads(user_path('user-path-uninstalled'))
+                # Windows may represent an empty user PATH as absent.
+                check('uninstall removes only owned user PATH token', (removed_path or '') == (expected_path or ''))
+            else:
+                run('uninstall', ['bash', repo / 'packaging/install.sh', '--uninstall', '--prefix', prefix])
             if linux:
                 check('uninstall preserves state and removes integration', not binary.exists() and
                       not desktop.exists() and not unit.exists() and (state / 'jobs.jsonl').read_bytes() == journal)

@@ -6,7 +6,7 @@ import tomllib
 import unittest
 from unittest import mock
 
-from installed import installed_fidelity_matches_builds, main, without_installer_path
+from installed import installed_fidelity_matches_builds, main, remove_windows_installation, without_installer_path
 
 
 MANIFEST = tomllib.loads("""
@@ -82,15 +82,27 @@ class InstalledArchiveTests(unittest.TestCase):
         wrong_target['format'] = 'webp'
         self.assertFalse(installed_fidelity_matches_builds(job([wrong_target]), MANIFEST))
 
+    def test_windows_removal_uses_the_same_command_and_a_child_only_action(self):
+        command = ['pwsh', '-NoProfile', '-NonInteractive', '-File', 'packaging/install.ps1']
+        installer = command.copy()
+        env = {'RETYPE_INSTALL_MODE': 'preview', 'RETYPE_PREFIX': r'C:\fixture'}
+        original = env.copy()
+        run = mock.Mock()
+        remove_windows_installation(run, installer, env)
+        run.assert_called_once_with('uninstall', command, child_env=original | {'RETYPE_ACTION': 'remove'})
+        self.assertEqual(env, original)
+        self.assertEqual(installer, command)
+
     def test_path_cleanup_removes_only_the_installer_added_token(self):
         binary_dir = r'C:\fixture\bin'
         cases = [
             (r';C:\Old;;C:\fixture\bin;C:\New;', r';C:\Old;;', r';C:\Old;;C:\New;'),
-            (r'c:/fixture/bin/;C:\New', None, r'C:\New'),
+            (r'c:\FIXTURE\BIN;C:\New', None, r'C:\New'),
+            (r'c:/fixture/bin/; C:\fixture\bin ;' + binary_dir, None, r'c:/fixture/bin/; C:\fixture\bin '),
             (binary_dir, None, None),
             (binary_dir + ';', None, ''),
             (binary_dir, '', ''),
-            (None, '', ''),
+            (None, '', None),
             (r'C:\New;' + binary_dir, binary_dir, r'C:\New;' + binary_dir),
         ]
         for current, before, expected in cases:

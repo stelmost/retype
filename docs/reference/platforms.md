@@ -78,7 +78,7 @@ Windows, in PowerShell:
 irm https://retype.name/install.ps1 | iex
 ```
 
-Signed mode authenticates the final publisher manifest before extraction or helper execution and verifies native signatures independently. Preview checksums detect corruption, not publisher identity. Windows preview installs the CLI/assets and adds its owned `bin` token to user `PATH`, without URI/notifier/startup integration. Linux retains its notification/URI desktop entry and disabled systemd user unit, requires Python 3 and `xdg-mime`, and preserves service enablement and user edits on update. Unix `--uninstall` and Windows `-Uninstall` preserve configuration, watches and recovery data. macOS native bundle, safe extraction, metadata/staple preservation and real-user integration remain unqualified; no private or ephemeral HOME is accepted as desktop proof.
+Signed mode authenticates the final publisher manifest before extraction or helper execution and verifies native signatures independently. Preview checksums detect corruption, not publisher identity. Windows preview installs the CLI/assets and adds its owned `bin` token to user `PATH`, without URI/notifier/startup integration. Linux retains its notification/URI desktop entry and disabled systemd user unit, requires Python 3 and `xdg-mime`, and preserves service enablement and user edits on update. Unix `--uninstall` and Windows `RETYPE_ACTION=remove` preserve configuration, watches and recovery data. macOS native bundle, safe extraction, metadata/staple preservation and real-user integration remain unqualified; no private or ephemeral HOME is accepted as desktop proof.
 
 What the installed-tier installer does, per platform:
 
