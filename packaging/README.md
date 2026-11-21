@@ -78,6 +78,8 @@ Start the installed service explicitly when automatic watching should persist ac
 systemctl --user enable --now retype.service
 ```
 
+Without lingering or another session for that user, systemd stops the user manager and daemon after the last logout. The enabled unit starts again at the next login and reloads its watch registrations. This is not uninterrupted daemon execution: waiting jobs from the stopped daemon are reported as `E_JOB_INTERRUPTED`, not automatically replayed. Service enablement does not enable lingering or change this recovery policy.
+
 Linux removal uses the same installer without contacting the release server:
 
 ```sh
