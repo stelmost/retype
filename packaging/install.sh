@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Install or update retype from a GitHub release.
 #
-# The release archive is selected from the host platform, its SHA-256 is checked
-# against the release checksums, and the binary and shared assets are installed
-# under a prefix. Running the script again updates an existing installation.
-#
-# This is not a code signature. The installed tier still needs platform signing.
+# Signed installs authenticate the publisher manifest before extraction or code.
+# Explicit preview mode retains checksum verification but supplies no publisher trust.
 set -euo pipefail
+
+# Filled from the independently approved publisher inputs, never from a download.
+retype_minisign_public_key=''
+retype_macos_team_id=''
 
 # BEGIN RETYPE_RELEASE_TRUST
 _retype_manifest_checksum() {
@@ -123,7 +124,9 @@ version=${RETYPE_VERSION:-latest}
 prefix=${RETYPE_PREFIX:-${HOME:?HOME is not set}/.local}
 target=${RETYPE_TARGET:-}
 release_base=${RETYPE_RELEASE_BASE:-https://github.com/$repo/releases/download}
+install_mode=${RETYPE_INSTALL_MODE:-signed}
 uninstall=false
+enable_startup=false
 
 usage() {
 	cat <<'EOF'
@@ -137,7 +140,9 @@ Usage:
 Options:
   --version TAG   Install a specific release tag instead of the latest
   --prefix DIR    Install under DIR (default: $HOME/.local)
-  --uninstall     Remove this Linux installation, preserving configuration and recovery data
+  --uninstall     Remove this installation, preserving configuration and recovery data
+  --preview       Explicit unsigned preview, outside installed-tier qualification
+  --enable-startup  Opt in to native per-user startup on macOS
   -h, --help      Show this help
 
 Environment:
@@ -146,10 +151,13 @@ Environment:
   RETYPE_REPO          GitHub repository (default: LapilliWorks/retype)
   RETYPE_RELEASE_BASE  Release download base, for a mirror
   RETYPE_TARGET        Override platform detection, such as x86_64-unknown-linux-gnu
+  RETYPE_INSTALL_MODE  signed (default) or explicit preview
 
+Signed installs need an independently trusted minisign and fixed publisher pins.
 On Linux, installs the notification/URI desktop entry and systemd user unit;
 new services stay disabled. Requires python3 and xdg-mime (xdg-utils).
-On macOS, installs the CLI, daemon and shared assets only.
+On macOS, installs the native app/URI identity; startup stays off unless opted in.
+No SDK, compiler, elevation, keychain changes or converter installation is performed.
 EOF
 }
 
@@ -194,6 +202,56 @@ sha256_of() {
 	fi
 }
 
+# BEGIN RETYPE_MACOS_EXTRACTION
+extract_macos() {
+	local archive=$1 destination=$2 root=$3 version
+	[ -x /usr/bin/perl ] || die 'macOS archive validation needs the built-in Perl runtime'
+	version=$(/usr/bin/tar --version) || die 'cannot identify the native archive tool'
+	case $version in *bsdtar*) ;; *) die 'macOS extraction requires native libarchive/bsdtar' ;; esac
+	[ ! -e "$destination" ] && [ ! -L "$destination" ] || die 'archive staging must be fresh'
+	mkdir -m 0700 "$destination"
+	/usr/bin/tar -tzf "$archive" >"$destination.entries" || die 'cannot enumerate release archive'
+	/usr/bin/perl -e '
+		use strict; use warnings;
+		my $root = shift @ARGV; my %seen; my $found = 0;
+		while (<>) {
+			chomp; s{/$}{};
+			die "unsupported archive path\n" unless /^[A-Za-z0-9_.+\/-]+$/;
+			my @parts = split m{/};
+			die "unexpected archive root\n" unless $parts[0] eq $root;
+			die "unsupported archive component\n" if grep { $_ eq q{} || $_ eq q{.} || $_ eq q{..} } @parts;
+			die "duplicate or case-colliding archive member\n" if $seen{lc $_}++;
+			$found = 1 if $_ eq $root;
+		}
+		die "missing archive root\n" unless $found;
+	' "$root" "$destination.entries" || die 'unsupported release archive hierarchy'
+	/usr/bin/tar -tvzf "$archive" >"$destination.types" || die 'cannot enumerate archive entry types'
+	/usr/bin/perl -ne '
+		die "unsupported archive entry type\n" unless /^[-d]/;
+		die "archive links are unsupported\n" if / -> | link to /;
+	' "$destination.types" || die 'release archive contains links or special entries'
+	# Keep bsdtar secure-symlink/no-dotdot defaults enabled: never use -P or --insecure.
+	# Safe writes and empty private staging avoid existing-inode replacement; xattrs are not stripped.
+	/usr/bin/tar --safe-writes --no-same-owner --no-same-permissions -xzf "$archive" -C "$destination" ||
+		die 'native secure archive extraction failed'
+	/usr/bin/perl -MFile::Find -e '
+		use strict; use warnings;
+		my ($staging, $root) = @ARGV; my %seen;
+		find({ no_chdir => 1, wanted => sub {
+			my $path = $File::Find::name; return if $path eq $staging;
+			my $name = substr($path, length($staging) + 1);
+			my @parts = split m{/}, $name;
+			die "unexpected extracted root\n" unless $parts[0] eq $root;
+			die "unsupported extracted path\n" unless $name =~ /^[A-Za-z0-9_.+\/-]+$/;
+			die "case-colliding extracted path\n" if $seen{lc $name}++;
+			my @info = lstat($path); die "cannot inspect extracted entry\n" unless @info;
+			die "unowned or unsafe extracted entry\n" if $info[4] != $< || ($info[2] & 07022);
+			die "extracted link or special entry\n" unless -d _ || (-f _ && $info[3] == 1);
+		}}, $staging);
+	' "$destination" "$root" || die 'extracted archive failed type/ownership/permission validation'
+}
+# END RETYPE_MACOS_EXTRACTION
+
 # Current Debian stable (trixie) defines the Linux floor. Report an older runtime
 # before attempting to execute the downloaded binary.
 check_glibc() {
@@ -230,6 +288,14 @@ while [ $# -gt 0 ]; do
 		uninstall=true
 		shift
 		;;
+	--preview)
+		install_mode=preview
+		shift
+		;;
+	--enable-startup)
+		enable_startup=true
+		shift
+		;;
 	-h | --help)
 		usage
 		exit 0
@@ -263,17 +329,63 @@ if [ -z "$target" ]; then
 	target=$arch-$os
 fi
 
+case $install_mode in signed | preview) ;; *) die 'RETYPE_INSTALL_MODE must be signed or preview' ;; esac
+if $enable_startup; then
+	$uninstall && die '--enable-startup cannot be combined with --uninstall'
+	case $target in *-apple-darwin) ;; *) die '--enable-startup is a macOS option' ;; esac
+fi
+
 bin_dir=$prefix/bin
 share_dir=$prefix/share/retype
 integration_helper=
+integration_runtime=python3
+integration_asset=packaging/linux/integrate.py
+integration_extension=py
+integration_options=()
+case $target in
+*-apple-darwin)
+	[ "$(uname -s)" = Darwin ] || die 'macOS installation needs a native macOS host'
+	[ "$(id -u)" -ne 0 ] || die 'refusing a per-user macOS installation as root'
+	macos_version=$(sw_vers -productVersion) || die 'cannot identify the macOS runtime'
+	macos_major=${macos_version%%.*}
+	[[ $macos_major =~ ^[0-9]+$ ]] && [ "$macos_major" -ge 15 ] || die 'macOS installation needs macOS 15 or newer'
+	case $prefix:$HOME in *$'\n'* | *$'\r'* | *$'\t'*) die 'macOS paths must not contain control characters' ;; esac
+	case /${prefix#/}/ in *'/../'* | *'/./'* | '//') die 'unsupported macOS installation prefix' ;; esac
+	for path in "$prefix" "$bin_dir" "$prefix/share" "$share_dir"; do
+		[ ! -L "$path" ] || die "refusing a symlinked macOS installation path: $path"
+	done
+	integration_runtime=bash
+	integration_asset=packaging/macos/integrate.sh
+	integration_extension=sh
+	if $enable_startup; then integration_options=(--enable-startup); fi
+	;;
+esac
+
+if ! $uninstall; then
+	if [ "$install_mode" = signed ]; then
+		[[ $retype_minisign_public_key =~ ^[A-Za-z0-9+/]{56}$ ]] || die 'signed installer has no approved publisher key'
+		have retype_verify_release || die 'signed installer lacks its embedded trusted verifier'
+		have minisign || die 'signed installation needs an independently trusted minisign'
+		case $target in *-apple-darwin)
+			[[ $retype_macos_team_id =~ ^[A-Z0-9]{10}$ ]] || die 'signed installer has no approved Apple Team ID'
+			;;
+		esac
+	else
+		printf 'install: UNSIGNED PREVIEW; publisher trust is not verified, not installed-tier qualification\n' >&2
+	fi
+fi
 
 if $uninstall; then
 	case $target in
-	*-unknown-linux-gnu) ;;
-	*) die '--uninstall currently supports Linux only' ;;
+	*-unknown-linux-gnu)
+		have python3 || die 'Linux installation removal needs python3'
+		[ -f "$share_dir/packaging/linux/integrate.py" ] || die 'this installation has no Linux integration helper'
+		;;
+	*-apple-darwin)
+		[ -f "$share_dir/$integration_asset" ] || die 'this installation has no macOS integration helper'
+		;;
+	*) die '--uninstall supports Linux and macOS only' ;;
 	esac
-	have python3 || die 'Linux installation removal needs python3'
-	[ -f "$share_dir/packaging/linux/integrate.py" ] || die 'this installation has no Linux integration helper'
 else
 	case $target in
 	*-unknown-linux-gnu)
@@ -335,8 +447,15 @@ cleanup() {
 	local status=$?
 	trap - EXIT
 	if [ "$status" -ne 0 ] && [ -n "$backup" ]; then
-		if restore_installation && { [ -z "$integration_helper" ] ||
-			python3 "$integration_helper" rollback --prefix "$prefix" --backup "$backup"; }; then
+		local can_restore=true
+		case $target in *-apple-darwin)
+			if [ -n "$integration_helper" ] && ! bash "$integration_helper" abort --prefix "$prefix" --backup "$backup"; then
+				can_restore=false
+			fi
+			;;
+		esac
+		if $can_restore && restore_installation && { [ -z "$integration_helper" ] ||
+			"$integration_runtime" "$integration_helper" rollback --prefix "$prefix" --backup "$backup"; }; then
 			printf 'install: previous installation preserved; backup: %s\n' "$backup" >&2
 		else
 			printf 'install: rollback failed; recover the previous installation from %s\n' "$backup" >&2
@@ -353,13 +472,17 @@ trap 'exit 143' TERM
 
 if $uninstall; then
 	backup=$(mktemp -d "$prefix/share/retype-backup.XXXXXX")
-	integration_helper=$backup/integrate.py
-	cp "$share_dir/packaging/linux/integrate.py" "$integration_helper"
+	integration_helper=$backup/integrate.$integration_extension
+	cp "$share_dir/$integration_asset" "$integration_helper"
 	if [ -e "$bin_dir/retype" ] || [ -L "$bin_dir/retype" ]; then
 		staged_bin=$(mktemp "$bin_dir/.retype.XXXXXX")
 		cp -pP "$bin_dir/retype" "$backup/retype"
 	fi
-	python3 "$integration_helper" remove --prefix "$prefix" --backup "$backup"
+	case $target in *-apple-darwin)
+		bash "$integration_helper" prepare --prefix "$prefix" --backup "$backup" --source "$share_dir"
+		;;
+	esac
+	"$integration_runtime" "$integration_helper" remove --prefix "$prefix" --backup "$backup"
 	changed_bin=true
 	rm -f "$bin_dir/retype"
 	had_share=true
@@ -369,17 +492,36 @@ if $uninstall; then
 	exit 0
 fi
 
-sums=$(download "$base/SHA256SUMS") || die "could not download checksums: $base/SHA256SUMS"
-expected=$(printf '%s\n' "$sums" | awk -v name="$archive" '$2 == name || $2 == "*" name { print $1; exit }')
-[ -n "$expected" ] || die "release $tag has no checksum for $archive"
-
-download_file "$base/$archive" "$tmp/$archive" || die "could not download $base/$archive"
-actual=$(sha256_of "$tmp/$archive")
-[ "$actual" = "$expected" ] || die "checksum mismatch for $archive: expected $expected, got $actual"
+if [ "$install_mode" = signed ]; then
+	download_file "$base/SHA256SUMS" "$tmp/SHA256SUMS" || die 'could not download publisher manifest'
+	download_file "$base/SHA256SUMS.minisig" "$tmp/SHA256SUMS.minisig" || die 'could not download publisher signature'
+	download_file "$base/$archive" "$tmp/$archive" || die "could not download $base/$archive"
+	retype_verify_release "$tmp/$archive" "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.minisig" "$retype_minisign_public_key" ||
+		die 'publisher manifest or archive rejected; installation unchanged'
+else
+	sums=$(download "$base/SHA256SUMS") || die "could not download checksums: $base/SHA256SUMS"
+	expected=$(printf '%s\n' "$sums" | awk -v name="$archive" '$2 == name || $2 == "*" name { print $1; exit }')
+	[ -n "$expected" ] || die "release $tag has no checksum for $archive"
+	download_file "$base/$archive" "$tmp/$archive" || die "could not download $base/$archive"
+	actual=$(sha256_of "$tmp/$archive")
+	[ "$actual" = "$expected" ] || die "checksum mismatch for $archive: expected $expected, got $actual"
+fi
 
 have tar || die 'needs tar'
-tar -xzf "$tmp/$archive" -C "$tmp"
-src=$tmp/$name
+case $target in
+*-apple-darwin)
+	extract_macos "$tmp/$archive" "$tmp/unpack" "$name"
+	src=$tmp/unpack/$name
+	[ "$install_mode" != signed ] || retype_verify_macos "$src/share/retype/macos/retype.app" \
+		Contents/Resources/retype "$retype_macos_team_id" com.lapilliworks.retype.cli com.lapilliworks.retype.cli
+	cmp -s "$src/bin/retype" "$src/share/retype/macos/retype.app/Contents/Resources/retype" ||
+		die 'macOS archive CLI differs from the bundled CLI'
+	;;
+*)
+	tar -xzf "$tmp/$archive" -C "$tmp"
+	src=$tmp/$name
+	;;
+esac
 [ -f "$src/bin/retype" ] || die "$archive does not contain bin/retype"
 
 mkdir -p "$bin_dir" "$prefix/share"
@@ -392,11 +534,21 @@ staged_share=$(mktemp -d "$prefix/share/.retype.XXXXXX")
 if [ -d "$src/share/retype" ]; then
 	cp -R "$src/share/retype/." "$staged_share/"
 fi
+case $target in *-apple-darwin)
+	[ "$install_mode" != signed ] || retype_verify_macos "$staged_share/macos/retype.app" \
+		Contents/Resources/retype "$retype_macos_team_id" com.lapilliworks.retype.cli com.lapilliworks.retype.cli
+	;;
+esac
 output=$("$staged_bin" --version 2>&1) || die "the staged binary does not run; installation unchanged: $output"
 case $target in
 *-unknown-linux-gnu)
 	[ -f "$staged_share/packaging/linux/integrate.py" ] || die 'the release lacks Linux desktop integration assets'
 	python3 "$staged_share/packaging/linux/integrate.py" check --prefix "$prefix"
+	;;
+*-apple-darwin)
+	[ -f "$staged_share/$integration_asset" ] || die 'release lacks macOS integration assets'
+	bash "$staged_share/$integration_asset" check --prefix "$prefix" --source "$staged_share" \
+		${integration_options[@]+"${integration_options[@]}"}
 	;;
 esac
 
@@ -406,6 +558,15 @@ case $target in
 *-unknown-linux-gnu)
 	integration_helper=$backup/integrate.py
 	cp "$staged_share/packaging/linux/integrate.py" "$integration_helper"
+	;;
+*-apple-darwin)
+	integration_helper=$backup/integrate.sh
+	cp "$staged_share/$integration_asset" "$integration_helper"
+	if [ -e "$bin_dir/retype" ] || [ -L "$bin_dir/retype" ]; then
+		cp -pP "$bin_dir/retype" "$backup/retype"
+	fi
+	bash "$integration_helper" prepare --prefix "$prefix" --backup "$backup" --source "$staged_share" \
+		${integration_options[@]+"${integration_options[@]}"}
 	;;
 esac
 if [ -e "$bin_dir/retype" ] || [ -L "$bin_dir/retype" ]; then
@@ -422,7 +583,8 @@ changed_bin=true
 mv -f "$staged_bin" "$bin_dir/retype"
 output=$("$bin_dir/retype" --version 2>&1) || die "the installed binary does not run: $output"
 if [ -n "$integration_helper" ]; then
-	python3 "$integration_helper" install --prefix "$prefix" --backup "$backup"
+	"$integration_runtime" "$integration_helper" install --prefix "$prefix" --backup "$backup" \
+		${integration_options[@]+"${integration_options[@]}"}
 fi
 
 printf 'retype installed at %s\n' "$bin_dir/retype"

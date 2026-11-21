@@ -11,6 +11,10 @@
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ExitTimeOut</key>
+	<integer>0</integer>
 	<key>KeepAlive</key>
 	<dict>
 		<key>SuccessfulExit</key>
