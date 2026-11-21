@@ -47,6 +47,7 @@ elif name == 'launchctl':
   if args[1].count('/') == 1: sys.exit(1 if state.get('no_gui') else 0)
   if not state.get('loaded'): sys.exit(1)
   print('\tprogram = ' + state['program'])
+  if state.get('pid') is not None: print('\tpid = ' + str(state['pid']))
  elif args[0] == 'bootout': state['loaded'] = False; save()
  elif args[0] == 'bootstrap':
   value = plistlib.loads(Path(args[2]).read_bytes())
@@ -133,6 +134,7 @@ def main():
 		"retype_minisign_public_key='" + 'A' * 56 + "'").replace("retype_macos_team_id=''",
 		"retype_macos_team_id='FIXTURE000'"))
 	checks = []
+	completed = False
 
 	def check(label, condition):
 		assert condition, label
@@ -146,12 +148,15 @@ def main():
 		state_path.write_text(json.dumps(value))
 		return value
 
-	def run(label, *options, success=True, mode='preview', script_path=installer, destination=prefix):
+	def run(label, *options, success=True, mode='preview', script_path=installer, destination=prefix, reason=None):
 		process = subprocess.run(['bash', str(script_path), '--prefix', str(destination), *options],
 			env={**env, 'RETYPE_INSTALL_MODE': mode}, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
 		(report / (label + '.stdout.log')).write_bytes(process.stdout)
 		(report / (label + '.stderr.log')).write_bytes(process.stderr)
-		assert (process.returncode == 0) == success, (label, process.returncode, process.stderr.decode(errors='replace'))
+		error = process.stderr.decode(errors='replace')
+		assert (process.returncode == 0) == success, (label, process.returncode, error)
+		if reason is not None:
+			assert reason in error, (label, reason, error)
 
 	def release(tag, *, broken=False, late=False, mismatch=False, extra=None):
 		name = 'retype-' + tag + '-' + TARGET
@@ -202,8 +207,10 @@ def main():
 	try:
 		release('v0.0.0-fixture')
 		release('v0.0.1-fixture')
-		run('missing-publisher-pin', '--version', 'v0.0.0-fixture', success=False, mode='signed', script_path=unconfigured)
+		run('missing-publisher-pin', '--version', 'v0.0.0-fixture', success=False, mode='signed',
+			script_path=unconfigured, reason='no approved publisher key')
 		check('Production pins stay empty; signed default refuses before installation', not (prefix / 'bin/retype').exists())
+		state(no_gui=True)
 		run('install', '--version', 'v0.0.0-fixture')
 		binary = prefix / 'bin/retype'
 		app = prefix / 'share/retype/macos/retype.app'
@@ -216,6 +223,18 @@ def main():
 		check('Exact packaged CLI and private retained environment', sha(binary) == sha(app / 'Contents/Resources/retype') and
 			(receipt / 'environment.plist').stat().st_mode & 0o777 == 0o600 and
 			plistlib.loads(environment)['RETYPE_STATE_DIR'] == str(recovery))
+		initial = sha(binary)
+		run('no-gui-startup', '--version', 'v0.0.0-fixture', '--enable-startup', success=False, reason='GUI session')
+		check('Startup without a GUI session refuses without enabling or replacing files',
+			sha(binary) == initial and not agent.exists() and not state()['loaded'])
+		state(no_gui=False, uid=0)
+		run('root-refusal', '--version', 'v0.0.0-fixture', success=False, reason='as root')
+		state(uid=1000, os_version='14.7')
+		run('os-floor-refusal', '--version', 'v0.0.0-fixture', success=False, reason='macOS 15')
+		state(os_version='15.0', account_home=str(fixture / 'other-account'))
+		run('home-refusal', '--version', 'v0.0.0-fixture', success=False, reason='HOME does not match')
+		state(account_home=str(home))
+		check('Root, older OS and mismatched account HOME refuse without changing the install', sha(binary) == initial)
 		run('update', '--version', 'v0.0.1-fixture')
 		check('Update retains environment and persistent original binary backup',
 			(receipt / 'environment.plist').read_bytes() == environment and
@@ -234,6 +253,12 @@ def main():
 		run('stopped-update', '--version', 'v0.0.1-fixture')
 		check('Stopped startup stays stopped across update', not state()['loaded'])
 		before = sha(binary)
+		state(loaded=True, program=str(fixture / 'unowned-program'))
+		run('unowned-job-refusal', '--version', 'v0.0.1-fixture', success=False, reason='unowned launchd job')
+		state(program=str(binary), pid=0)
+		run('unsafe-pid-refusal', '--version', 'v0.0.1-fixture', success=False, reason='unsafe launchd pid')
+		state(loaded=False, pid=None)
+		check('Unowned loaded jobs and process-group PID zero are never controlled', sha(binary) == before)
 		for tag, options in (('v0.0.2-broken', {'broken': True}), ('v0.0.3-late', {'late': True}),
 			('v0.0.4-mismatch', {'mismatch': True})):
 			release(tag, **options)
@@ -247,8 +272,10 @@ def main():
 		check('Partially loaded startup is unloaded before rollback', sha(binary) == before and not state()['loaded'])
 		original_agent = agent.read_bytes()
 		agent.write_bytes(original_agent + b'<!-- User modification -->\n')
-		run('modified-definition', '--version', 'v0.0.0-fixture', success=False)
-		check('Modified native definition is refused and preserved', sha(binary) == before and agent.read_bytes() != original_agent)
+		run('modified-definition', '--version', 'v0.0.0-fixture', success=False, reason='modified or unowned LaunchAgent')
+		run('modified-removal', '--uninstall', success=False, reason='modified or unowned LaunchAgent')
+		check('Modified native definition refuses both update and removal and is preserved',
+			sha(binary) == before and agent.read_bytes() != original_agent)
 		agent.write_bytes(original_agent)
 		mirror = fixture / 'releases/v0.0.0-fixture'
 		(mirror / 'SHA256SUMS.minisig').write_text('corrupt fixture signature\n')
@@ -259,6 +286,9 @@ def main():
 		(mirror / 'SHA256SUMS').write_text(sums + sums)
 		run('duplicate-manifest', '--version', 'v0.0.0-fixture', success=False, mode='signed')
 		check('Signed hook rejects duplicate digest entries', sha(binary) == before)
+		(mirror / 'SHA256SUMS').write_text('0' * 64 + sums[64:])
+		run('preview-checksum-refusal', '--version', 'v0.0.0-fixture', success=False, reason='checksum mismatch')
+		check('Explicit preview still refuses a bad digest without replacing files', sha(binary) == before)
 		(mirror / 'SHA256SUMS').write_text(sums)
 		run('signed-contract', '--version', 'v0.0.1-fixture', mode='signed')
 		calls = [json.loads(line) for line in (fixture / 'native-calls.jsonl').read_text().splitlines()]
@@ -273,6 +303,11 @@ def main():
 			run(tag, '--version', tag, success=False)
 			check('Synthetic unsafe entry refusal: ' + extra[0], sha(binary) == before and
 				(fixture / 'outside-canary').read_bytes() == b'Owned outside-staging canary')
+		run('owned-offline-uninstall', '--uninstall')
+		check('Owned removal restores the prior URI handler and keeps recovery/configuration',
+			state()['handler'] == 'org.example.previous' and not binary.exists() and not link.exists() and
+			config.read_bytes() == original_config and (recovery / 'original').read_bytes() == original_recovery)
+		run('reinstall', '--version', 'v0.0.1-fixture')
 		state(handler='org.example.changed')
 		run('changed-uri-update', '--version', 'v0.0.1-fixture')
 		run('offline-uninstall', '--uninstall')
@@ -280,13 +315,14 @@ def main():
 			state()['handler'] == 'org.example.changed' and not binary.exists() and not link.exists() and not agent.exists())
 		check('Configuration and recovery bytes are never replaced or removed',
 			config.read_bytes() == original_config and (recovery / 'original').read_bytes() == original_recovery)
+		completed = True
 	finally:
 		(report / 'source-sha256.json').write_text(json.dumps({
 			str(path.relative_to(ROOT)): sha(path) for path in (ROOT / 'packaging/install.sh',
 				ROOT / 'packaging/macos/integrate.sh', ROOT / 'packaging/macos/notifier.swift')
 		}, indent=2) + '\n')
 		(report / 'result.json').write_text(json.dumps({
-			'checks': len(checks), 'fixture': str(fixture), 'native': False, 'publisher_trust': False,
+			'ok': completed, 'checks': len(checks), 'fixture': str(fixture), 'native': False, 'publisher_trust': False,
 			'limits': 'Python/tar/tool doubles; no native libarchive, Mac SDK, URI, notification, real login or signature proof',
 		}, indent=2) + '\n')
 	print(str(len(checks)) + ' synthetic macOS installer checks passed; fixture retained at ' + str(fixture))
