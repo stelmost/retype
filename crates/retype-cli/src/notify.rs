@@ -2,15 +2,15 @@
 //!
 //! One notification per rename batch, because a directory full of photographs should
 //! not be twelve interruptions. The message is built from the records, so it says what
-//! happened rather than what was attempted, and the only action this build offers is
-//! Undo, which is the one that does not need the GUI.
+//! happened rather than what was attempted. The Linux action opens a native Review
+//! dialog; the notification itself never undoes anything.
 //!
 //! Capability is a property of the platform, so there are three tiers and the daemon
 //! uses the best one it has:
 //!
 //! | Tier | How | Where |
 //! |---|---|---|
-//! | Actions | `notify-send --wait --action` | Linux with a session bus and a libnotify build that has actions |
+//! | Review | `notify-send --wait --action`, then Zenity | Linux with notification actions and a graphical session |
 //! | Plain | `notify-send` | Linux with a session bus |
 //! | Plain | the installed `retype.app` notifier, or `osascript` in source builds | macOS |
 //! | Plain | a toast through `powershell.exe` | Windows |
@@ -36,7 +36,7 @@ const NAMED: usize = 3;
 pub struct Message {
 	pub title: String,
 	pub body: String,
-	/// The jobs an Undo would reverse, empty when there is nothing to undo.
+	/// Exact job IDs to check for a possible Undo when Review is opened.
 	pub undo: Vec<JobId>,
 }
 
@@ -103,9 +103,14 @@ impl Message {
 			body.push_str(&parked_hint(&parked));
 		}
 
-		let undo = match undo_enabled {
-			true => converted.iter().map(|job| job.id.clone()).collect(),
-			false => Vec::new(),
+		let has_other_outputs = jobs.iter().any(|job| {
+			!matches!(job.state, JobState::Done | JobState::Partial)
+				&& job.outputs.iter().any(|output| output.state == OutputState::Done)
+		});
+		let undo = if undo_enabled && !has_other_outputs {
+			converted.iter().map(|job| job.id.clone()).collect()
+		} else {
+			Vec::new()
 		};
 
 		Some(Self {
@@ -264,7 +269,8 @@ fn file_name(path: &Path) -> String {
 /// The best way this machine can say something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
-	/// A notification with an Undo button.
+	/// A notification with a Review button.
+	#[cfg(target_os = "linux")]
 	Actions,
 	/// A notification without buttons.
 	Plain,
@@ -308,19 +314,19 @@ impl Channel {
 				return Self::Log;
 			}
 
-			match actions {
-				true => Self::Actions,
-				false => Self::Plain,
+			#[cfg(target_os = "linux")]
+			if actions && review::available() {
+				return Self::Actions;
 			}
+			let _ = actions;
+			Self::Plain
 		}
 	}
 
-	/// Show the message, and act on what the user pressed.
-	///
-	/// `undo` is called only when the platform reported the action, which is why the
-	/// actionable tier waits: `notify-send --wait` answers on its own stdout, and there
-	/// is nothing else to listen to.
-	pub fn send(&self, message: &Message, undo: impl FnOnce(&[JobId])) {
+	/// Show the message, and open a read-only review if requested.
+	pub fn send(&self, message: &Message, state_dir: &Path) {
+		#[cfg(not(target_os = "linux"))]
+		let _ = state_dir;
 		match self {
 			Self::Log => {
 				// The title is the product's own name, so a log line would say it twice.
@@ -329,18 +335,12 @@ impl Channel {
 			Self::Plain => {
 				let _ = plain(message);
 			}
-			Self::Actions => match message.undo.is_empty() {
-				// Nothing to offer, so nothing to wait for.
-				true => {
-					let _ = notify_send(message, false);
-				}
-				false => {
-					let action = notify_send(message, true);
-
-					if action.as_deref() == Some("undo") {
-						undo(&message.undo);
-					}
-				}
+			#[cfg(target_os = "linux")]
+			Self::Actions => match notify_send(message, true) {
+				Ok(true) => review::show(message, state_dir),
+				Ok(false) => {}
+				/* The notification server may already have displayed a plain fallback. */
+				Err(error) => eprintln!("retype: Review notification unavailable: {error}; {}", message.body),
 			},
 		}
 	}
@@ -384,7 +384,7 @@ fn plain(message: &Message) -> Option<String> {
 
 	#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 	{
-		notify_send(message, false)
+		notify_send(message, false).ok().map(|_| String::new())
 	}
 }
 
@@ -404,38 +404,49 @@ fn macos_notifier(executable: &Path) -> Option<std::path::PathBuf> {
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 fn send_macos(helper: &Path, message: &Message, timeout: std::time::Duration) -> std::io::Result<()> {
-	use std::io::{Error, ErrorKind};
-	use std::time::{Duration, Instant};
-
-	let mut child = Command::new(helper)
+	let child = Command::new(helper)
 		.args(["notify", &message.title, &message.body])
 		.stdin(Stdio::null())
 		.stdout(Stdio::null())
 		.stderr(Stdio::inherit())
 		.spawn()?;
+	let status = wait_for_helper(child, timeout, "native notifier")?;
+	if !status.success() {
+		return Err(std::io::Error::other(format!("native notifier exited {status}")));
+	}
+	Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", all(test, unix)))]
+fn wait_for_helper(
+	mut child: std::process::Child,
+	timeout: std::time::Duration,
+	name: &str,
+) -> std::io::Result<std::process::ExitStatus> {
+	use std::io::{Error, ErrorKind};
+	use std::time::{Duration, Instant};
+
 	let deadline = Instant::now() + timeout;
-	let result = loop {
+	let error = loop {
 		match child.try_wait() {
-			Ok(Some(status)) if status.success() => break Ok(()),
-			Ok(Some(status)) => break Err(Error::other(format!("native notifier exited {status}"))),
-			Err(error) => break Err(error),
+			Ok(Some(status)) => return Ok(status),
+			Err(error) => break error,
 			Ok(None) => {}
 		}
 		if Instant::now() >= deadline {
-			break Err(Error::new(ErrorKind::TimedOut, "native notifier timed out"));
+			break Error::new(ErrorKind::TimedOut, format!("{name} timed out"));
 		}
 		std::thread::sleep(Duration::from_millis(10));
 	};
-	if result.is_err() {
-		/* Only the notification helper is killed; it never runs conversion or undo. */
-		let _ = child.kill();
-		let _ = child.wait();
-	}
-	result
+	/* Only the desktop helper is killed; it never runs conversion or undo. */
+	let _ = child.kill();
+	let _ = child.wait();
+	Err(error)
 }
 
-/// Run `notify-send`, answering with the action the user chose, if any.
-fn notify_send(message: &Message, with_action: bool) -> Option<String> {
+/// Run `notify-send`, answering whether the user pressed Review.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn notify_send(message: &Message, with_action: bool) -> std::io::Result<bool> {
 	let mut command = Command::new("notify-send");
 	// GNOME keeps actions visible after a finite notify-send wait has timed out.
 	let expiry = if with_action { "0" } else { "15000" };
@@ -449,7 +460,7 @@ fn notify_send(message: &Message, with_action: bool) -> Option<String> {
 	]);
 
 	if with_action {
-		command.args(["--wait", "--action", "undo=Undo"]);
+		command.args(["--wait", "--action", "review=Review"]);
 	}
 
 	let output = command
@@ -457,11 +468,243 @@ fn notify_send(message: &Message, with_action: bool) -> Option<String> {
 		.arg(&message.body)
 		.stdin(Stdio::null())
 		.stderr(Stdio::null())
-		.output()
-		.ok()?;
+		.output()?;
+	if !output.status.success() {
+		return Err(std::io::Error::other(format!("notify-send exited {}", output.status)));
+	}
+	Ok(output.stdout == b"review\n")
+}
 
-	let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
-	(!answer.is_empty()).then_some(answer)
+#[cfg(target_os = "linux")]
+mod review {
+	use std::collections::BTreeSet;
+	use std::fs;
+	use std::io;
+	use std::os::unix::fs::MetadataExt;
+	use std::time::Duration;
+
+	use retype_core::error::Result;
+	use retype_core::execute::Cancellation;
+	use retype_core::job::FileIdentity;
+	use retype_core::safety::Fingerprint;
+	use retype_core::undo::{Link, Record, Store};
+
+	use super::{Command, Message, OutputState, Path, Stdio, has_command, wait_for_helper};
+
+	const MAX_PATHS: usize = 6;
+	const MAX_PATH_BYTES: usize = 120;
+	const MAX_SUMMARY_CHARS: usize = 240;
+	const UNDO_RESPONSE: i32 = 42;
+
+	struct Proposal {
+		records: Vec<Record>,
+		text: String,
+	}
+
+	pub(super) fn available() -> bool {
+		["WAYLAND_DISPLAY", "DISPLAY"]
+			.iter()
+			.any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+			&& has_command("zenity")
+	}
+
+	pub(super) fn show(message: &Message, state_dir: &Path) {
+		let store = Store::open(state_dir);
+		let proposal = match propose(&store, message) {
+			Ok(proposal) => proposal,
+			Err(error) => {
+				eprintln!("retype: cannot review undo records: {error}");
+				None
+			}
+		};
+		let label = proposal.as_ref().map(|proposal| match proposal.records.len() {
+			1 => "Undo".to_string(),
+			count => format!("Undo {count} conversions"),
+		});
+		let text = match &proposal {
+			Some(proposal) => &proposal.text,
+			None => &close_only_text(&message.body),
+		};
+		match (dialog(text, label.as_deref()), proposal) {
+			(Ok(true), Some(proposal)) => {
+				if let Err(error) = restore(&store, &proposal.records) {
+					eprintln!("retype: cannot undo reviewed conversions: {error}");
+				}
+			}
+			(Err(error), _) => eprintln!("retype: cannot show review: {error}"),
+			_ => {}
+		}
+	}
+
+	fn propose(store: &Store, message: &Message) -> Result<Option<Proposal>> {
+		let ids = &message.undo;
+		if ids.is_empty() || ids.len() > MAX_PATHS / 2 || message.body.chars().nth(MAX_SUMMARY_CHARS).is_some() {
+			return Ok(None);
+		}
+		let mut records = Vec::with_capacity(ids.len());
+		for id in ids {
+			let Some(record) = store.load(id)? else {
+				return Ok(None);
+			};
+			/* Publication intents are not a complete inventory until the record is settled. */
+			if &record.id != id
+				|| record.pinned
+				|| record.undo_progress.is_some()
+				|| record.retention_started.is_none()
+				|| record.link != Link::Copy
+				|| record.commits.is_empty()
+				|| record.commits.len() >= MAX_PATHS
+				|| record.commits.len() != record.outputs.len()
+				|| !record.commits.iter().all(|commit| {
+					commit.output.state == OutputState::Done
+						&& record
+							.outputs
+							.iter()
+							.any(|output| output.path == commit.output.path && output.ext == commit.output.format)
+				}) {
+				return Ok(None);
+			}
+			records.push(record);
+		}
+		let Some(text) = review_text(&message.body, &records) else {
+			return Ok(None);
+		};
+		for record in &records {
+			if !files_eligible(store, record)? {
+				return Ok(None);
+			}
+		}
+		Ok(Some(Proposal { records, text }))
+	}
+
+	fn review_text(body: &str, records: &[Record]) -> Option<String> {
+		let mut text = summary(body);
+		text.push_str("\n\nUndo restores missing originals and removes only matching outputs listed below.\n");
+		let mut seen = BTreeSet::new();
+		for record in records {
+			text.push('\n');
+			let paths = std::iter::once(("Original", &record.source_path))
+				.chain(record.commits.iter().map(|commit| ("Output", &commit.output.path)));
+			for (label, path) in paths {
+				if seen.len() == MAX_PATHS || !seen.insert(path) || !path.is_absolute() {
+					return None;
+				}
+				let name = path.to_str()?;
+				if name.len() > MAX_PATH_BYTES || name.trim_end() != name || name.chars().any(hidden) {
+					return None;
+				}
+				text.push_str(&format!("{label}: {name}\n"));
+			}
+		}
+		Some(text)
+	}
+
+	/* A path must not inject a new line or reorder the review's labels. */
+	fn hidden(character: char) -> bool {
+		character.is_control()
+			|| (character.is_whitespace() && character != ' ')
+			|| matches!(character, '\u{061c}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+	}
+
+	fn summary(body: &str) -> String {
+		let mut chars = body.chars().map(|c| if hidden(c) { ' ' } else { c });
+		let mut text: String = chars.by_ref().take(MAX_SUMMARY_CHARS).collect();
+		if chars.next().is_some() {
+			text.push('…');
+		}
+		text
+	}
+
+	fn close_only_text(body: &str) -> String {
+		format!("{}\n\nUndo is not available for this batch.", summary(body))
+	}
+
+	/* Preflight only metadata; checked restoration verifies backup and output contents. */
+	fn files_eligible(store: &Store, record: &Record) -> Result<bool> {
+		let Some(original) = &record.source_fingerprint else {
+			return Ok(false);
+		};
+		let backup = fs::symlink_metadata(store.directory(&record.id).join(record.source_file()))?;
+		if !backup.is_file() || backup.len() != original.bytes {
+			return Ok(false);
+		}
+		match fs::symlink_metadata(&record.source_path) {
+			Ok(metadata) if !metadata.is_file() => return Ok(false),
+			Ok(metadata) if record.consume_source && !matches_metadata(&metadata, original) => return Ok(false),
+			Ok(_) => {}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error.into()),
+		}
+		for commit in &record.commits {
+			let metadata = fs::symlink_metadata(&commit.output.path)?;
+			if !matches_metadata(&metadata, &commit.fingerprint) {
+				return Ok(false);
+			}
+		}
+		Ok(true)
+	}
+
+	fn matches_metadata(metadata: &fs::Metadata, fingerprint: &Fingerprint) -> bool {
+		metadata.is_file()
+			&& metadata.len() == fingerprint.bytes
+			&& matches!(fingerprint.identity, Some(FileIdentity::Unix { dev, ino, .. })
+				if dev == metadata.dev() && ino == metadata.ino())
+	}
+
+	fn restore(store: &Store, records: &[Record]) -> Result<()> {
+		/* Refuse a stale approval for the whole batch before beginning any job's undo. */
+		let leases = records
+			.iter()
+			.map(|record| store.lease(&record.id))
+			.collect::<Result<Vec<_>>>()?;
+		for record in records {
+			if store.load(&record.id)?.as_ref() != Some(record) || !files_eligible(store, record)? {
+				return Err(io::Error::other(format!("{} changed since Review", record.id)).into());
+			}
+		}
+		for (record, lease) in records.iter().zip(leases) {
+			store.restore_owned(lease, &Cancellation::default())?;
+			eprintln!("retype: undid {}", record.id);
+		}
+		Ok(())
+	}
+
+	fn dialog(text: &str, undo_label: Option<&str>) -> io::Result<bool> {
+		let mut command = Command::new("zenity");
+		command.args(["--title=retype Review", "--no-markup", "--timeout=60", "--text", text]);
+		if let Some(label) = undo_label {
+			command.args([
+				"--question",
+				"--default-cancel",
+				"--cancel-label=Close",
+				"--ok-label",
+				label,
+			]);
+		} else {
+			command.args(["--info", "--ok-label=Close"]);
+		}
+		/* Debian 13 Zenity 4.1.90-1 (msg.c, util.c) maps Yes to ZENITY_OK and
+		 * reports No, dismissal and timeout separately. Do not accept an ordinary exit 0. */
+		let child = command
+			.env("ZENITY_OK", UNDO_RESPONSE.to_string())
+			.envs([
+				("ZENITY_CANCEL", "1"),
+				("ZENITY_ESC", "1"),
+				("ZENITY_ERROR", "255"),
+				("ZENITY_TIMEOUT", "5"),
+			])
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()?;
+		let status = wait_for_helper(child, Duration::from_secs(65), "review dialog")?;
+		match status.code() {
+			Some(UNDO_RESPONSE) => Ok(undo_label.is_some()),
+			Some(1 | 5) => Ok(false),
+			Some(0) if undo_label.is_none() => Ok(false),
+			_ => Err(io::Error::other(format!("zenity exited {status}"))),
+		}
+	}
 }
 
 /// The AppUserModelID the toast is shown under, in the publisher's reverse-DNS form.
@@ -721,12 +964,15 @@ mod tests {
 			message: "magick is not installed".to_string(),
 		});
 
-		let message = Message::of(&[job(2, JobState::Done), failed], true).expect("a message");
+		let converted = job(2, JobState::Done);
+		let id = converted.id.clone();
+		let message = Message::of(&[converted, failed], true).expect("a message");
 
 		assert_eq!(
 			message.body,
 			"1 converted (2.heic → 2.jpg), 1 failed (1.heic: magick is not installed)"
 		);
+		assert_eq!(message.undo, vec![id]);
 	}
 
 	#[test]
@@ -782,7 +1028,7 @@ mod tests {
 	}
 
 	#[test]
-	fn with_undo_disabled_there_is_no_button() {
+	fn with_undo_disabled_there_are_no_undo_candidates() {
 		let message = Message::of(&[job(1, JobState::Done)], false).expect("a message");
 
 		assert!(message.undo.is_empty());

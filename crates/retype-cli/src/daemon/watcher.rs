@@ -2015,24 +2015,14 @@ fn announce(shared: &Shared, ids: &[JobId]) {
 		Err(_) => return,
 	};
 
-	let Some(message) = crate::notify::Message::of(&jobs, shared.registry().undo().enabled) else {
+	let can_review_undo = jobs.len() == ids.len() && shared.registry().undo().enabled;
+	let Some(message) = crate::notify::Message::of(&jobs, can_review_undo) else {
 		return;
 	};
 
-	// Undo runs in the same thread as the wait for the button, and the state directory
-	// is all it needs: the journal is a cache of history, the records are the truth.
+	/* The dialog uses the current recovery records, not the notification's job summaries. */
 	let state_dir = shared.state_dir.clone();
-
-	std::thread::spawn(move || {
-		channel.send(&message, |ids| {
-			for id in ids {
-				match retype_core::undo::Store::open(&state_dir).restore(id) {
-					Ok(_) => eprintln!("retype: undid {id}"),
-					Err(error) => eprintln!("retype: cannot undo {id}: {error}"),
-				}
-			}
-		});
-	});
+	std::thread::spawn(move || channel.send(&message, &state_dir));
 }
 
 /// The record a job writes before it starts, so a client can see a job that is
