@@ -280,8 +280,10 @@ impl Channel {
 		#[cfg(target_os = "macos")]
 		{
 			let _ = actions;
-			if std::env::current_exe().ok().and_then(|path| macos_notifier(&path)).is_some()
-				|| has_command("osascript")
+			if std::env::current_exe()
+				.ok()
+				.and_then(|path| macos_notifier(&path))
+				.is_some() || has_command("osascript")
 			{
 				Self::Plain
 			} else {
@@ -798,7 +800,10 @@ mod tests {
 		let helper = app.join("MacOS/retype-notifier");
 		std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
 		std::fs::write(&helper, b"fixture").unwrap();
-		assert_eq!(macos_notifier(&directory.path().join("bin/retype")), Some(helper.clone()));
+		assert_eq!(
+			macos_notifier(&directory.path().join("bin/retype")),
+			Some(helper.clone())
+		);
 		assert_eq!(macos_notifier(&app.join("Resources/retype")), Some(helper));
 		assert!(macos_notifier(&directory.path().join("target/debug/retype")).is_none());
 	}
@@ -843,7 +848,11 @@ mod tests {
 		let helper = directory.path().join("notifier");
 		std::fs::write(&helper, "#!/bin/sh\nexec sleep 60\n").unwrap();
 		std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
-		let message = Message { title: "retype".to_string(), body: "fixture".to_string(), undo: Vec::new() };
+		let message = Message {
+			title: "retype".to_string(),
+			body: "fixture".to_string(),
+			undo: Vec::new(),
+		};
 		let start = Instant::now();
 		let error = send_macos(&helper, &message, Duration::from_millis(50)).unwrap_err();
 		assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
