@@ -106,6 +106,33 @@ jobs:
         timeout-minutes: 5
         run: |
           python3 tests/macos-archive.py --report "$RETYPE_TEST_REPORT_DIR/archive-boundaries" --allow-native-staging
+      - name: Parse PowerShell scripts on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          foreach ($path in @('packaging/install.ps1', 'tests/run.ps1',
+              'tests/prepare.ps1', 'tests/hyperv-info.ps1',
+              'tests/hyperv-check.ps1', 'tests/windows-storage-faults.ps1', 'tests/install.ps1',
+              'crates/retype-cli/tests/support/windows_runner_probe.ps1',
+              'tests/support/windows-user.ps1', 'packaging/windows/shortcut.ps1',
+              'packaging/trust/verify.ps1', 'packaging/trust/verify-windows.ps1',
+              'scripts/sign-windows.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path).Path, [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          }
+      - name: Test Hyper-V collector without a VM on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          ./tests/support/windows-user.ps1 -Architecture '${{ matrix.architecture }}' -Command @'
+          pwsh -NoProfile -NonInteractive -File ./tests/hyperv-check.ps1
+          '@
       - name: Run Windows suite
         if: runner.os == 'Windows'
         shell: pwsh

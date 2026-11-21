@@ -60,13 +60,6 @@ jobs:
       - run: python3 scripts/embed-trust.py --check packaging/install.ps1
       - run: timeout --kill-after=5s 30s bash tests/release.sh
       - run: test -s packaging/install.ps1
-      - name: Parse PowerShell installer
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'packaging/install.ps1').Path, [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
 
   package:
     name: assemble ${{ github.event_name == 'workflow_dispatch' && 'unsigned preview' || 'signed release' }} assets

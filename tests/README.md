@@ -22,6 +22,8 @@ Install ImageMagick 7.1+ with HEIC decoding, FFmpeg/FFprobe, Pandoc, a PDF engin
 | macOS with Homebrew | `./tests/prepare.sh` |
 | Windows PowerShell 7 with Chocolatey | `./tests/prepare.ps1`: Run in the same PowerShell session as testing |
 
+PowerShell parsing and diagnostics run on Windows only. Do not install or invoke `pwsh` on Linux or macOS for this qualification; Unix jobs check canonical PowerShell source text without executing it.
+
 Current Debian stable is the supported Linux baseline. Other distributions and Debian unstable can be used for development without implying support. Stable's Pandoc 3.1.11.1 does not work with Typst 0.15.1; use an older Typst and verify it with Pandoc. [Older Pandoc and Typst](../docs/advanced/converters.md#older-pandoc-and-typst) shows a side-by-side installation and path pin. CI selects Typst 0.11.1 for that older Pandoc; the default engine preference remains Typst first. Do not remove protected desktop packages or replace codecs just to make a report green. See `docs/dev/testing.md` for exact tool, codec and filesystem requirements.
 
 ## Check and run
