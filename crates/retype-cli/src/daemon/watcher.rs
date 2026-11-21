@@ -771,9 +771,7 @@ fn decide(
 	// directory converts nothing, and `patterns` decides which files are
 	// considered at all, `docs/config.md` §12.
 	let directory = fact.target.parent().unwrap_or(watched_root);
-	let cached = shared.policies.policy(watched_root, directory);
-
-	let policy = match cached.as_ref() {
+	let policy = match retype_core::policy::Policy::at(watched_root, directory) {
 		Ok(policy) => policy,
 		Err(problem) => {
 			eprintln!("retype: {problem}");
@@ -786,15 +784,7 @@ fn decide(
 		return;
 	}
 
-	let name = fact
-		.source
-		.file_name()
-		.and_then(|name| name.to_str())
-		.unwrap_or_default();
-
-	let relative = fact.source.strip_prefix(watched_root).unwrap_or(&fact.source);
-
-	if !policy.allows(name, relative) {
+	if !policy.allows_path(&fact.source) {
 		return;
 	}
 
@@ -861,7 +851,7 @@ fn decide(
 		&fact.target,
 		&id,
 		parked_batch,
-		policy,
+		&policy,
 	) {
 		crate::daemon::park::Verdict::Run => {}
 		crate::daemon::park::Verdict::Parked | crate::daemon::park::Verdict::Repaired => return,
@@ -896,7 +886,7 @@ fn admit_rename(
 		}
 	};
 
-	let Some(prepared) = prepare(shared, root, source, target) else {
+	let Some(prepared) = prepare(shared, root, source, target, &Cancellation::default()) else {
 		forget_batch(shared, batch, id);
 		return;
 	};
@@ -1237,6 +1227,7 @@ enum Input {
 
 /// What a job will do, worked out once and then run.
 struct Prepared {
+	root: PathBuf,
 	stem: String,
 	format: String,
 	resolved: Resolved,
@@ -1254,7 +1245,7 @@ pub fn convert(
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
-	let Some(prepared) = prepare(shared, root, source, target) else {
+	let Some(prepared) = prepare(shared, root, source, target, cancellation) else {
 		return;
 	};
 
@@ -1278,15 +1269,20 @@ pub fn convert_deferred(
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
-	let Some(prepared) = prepare_from(shared, root, source, intent) else {
-		return;
-	};
-
-	run(shared, source, source, prepared, Input::Named, force, id, cancellation);
+	match prepare_from(shared, root, source, intent, cancellation) {
+		Ok(prepared) => run(shared, source, source, prepared, Input::Named, force, id, cancellation),
+		Err(error) => fail_queued_preparation(shared, id, cancellation, &error),
+	}
 }
 
 /// Read a rename as a job, or say why it is not one.
-fn prepare(shared: &Shared, root: &Path, source: &Path, target: &Path) -> Option<Prepared> {
+fn prepare(
+	shared: &Shared,
+	root: &Path,
+	source: &Path,
+	target: &Path,
+	cancellation: &Cancellation,
+) -> Option<Prepared> {
 	let (source_name, target_name) = (
 		source.file_name().and_then(|name| name.to_str())?,
 		target.file_name().and_then(|name| name.to_str())?,
@@ -1307,73 +1303,129 @@ fn prepare(shared: &Shared, root: &Path, source: &Path, target: &Path) -> Option
 		}
 	};
 
-	build(shared, root, stem, format, parsed, target)
+	match build(shared, &registry, root, source, (stem, format), parsed, cancellation) {
+		Ok(prepared) => Some(prepared),
+		Err(error) => {
+			eprintln!("retype: {}: {error}", target.display());
+			None
+		}
+	}
 }
 
-/// Read a recorded intent as a job, which is what a parked job carries.
-fn prepare_from(shared: &Shared, root: &Path, source: &Path, text: &str) -> Option<Prepared> {
-	let source_name = source.file_name().and_then(|name| name.to_str())?;
-	let registry = shared.registry();
-	let (stem, format) = registry.split(source_name)?;
-
-	let parsed = match intent::parse(text) {
-		Ok(parsed) => parsed,
-		Err(problems) => {
-			eprintln!("retype: {}: {problems}", source.display());
-			return None;
+fn fail_queued_preparation(
+	shared: &Shared,
+	id: &JobId,
+	cancellation: &Cancellation,
+	error: &retype_core::error::Error,
+) {
+	let _guard = match shared.lock_parked_admission() {
+		Ok(guard) => guard,
+		Err(lock_error) => {
+			eprintln!("retype: cannot record why watched job {id} did not start: {error}; {lock_error}");
+			return;
 		}
 	};
-
-	build(shared, root, stem, format, parsed, source)
+	let job = shared.jobs.lock().ok().and_then(|jobs| {
+		jobs.iter()
+			.find(|job| &job.id == id && job.state == JobState::Queued)
+			.cloned()
+	});
+	if let Some(job) = job {
+		stop_before_watched_conversion(shared, &job, "cannot prepare the watched request", error, cancellation);
+	}
 }
 
-/// Resolve and compile, which is the same work whether the request came from a name
-/// or from a journal record.
-fn build(
+fn stop_before_watched_conversion(
+	shared: &Shared,
+	job: &Job,
+	context: &str,
+	error: &retype_core::error::Error,
+	cancellation: &Cancellation,
+) {
+	if !cancellation.is_cancelled() {
+		fail_before_conversion(shared, job, context, error);
+		return;
+	}
+	let mut stopped = job.clone();
+	stopped.set_state(if cancellation.is_superseded() {
+		JobState::Superseded
+	} else {
+		JobState::Cancelled
+	});
+	stopped.outputs.clear();
+	stopped.error = Some(JobError::new(Code::JobCancelled.to_string(), context));
+	if let Err(error) = publish_checked(shared, &stopped) {
+		report_unrecorded_failure(shared, &stopped, &error);
+	}
+}
+
+fn prepare_from(
 	shared: &Shared,
 	root: &Path,
-	stem: &str,
-	format: &str,
-	parsed: intent::Intent,
-	reported: &Path,
-) -> Option<Prepared> {
+	source: &Path,
+	text: &str,
+	cancellation: &Cancellation,
+) -> retype_core::error::Result<Prepared> {
 	let registry = shared.registry();
-	let mut resolved = match resolve::resolve(
+	let (stem, format) = source
+		.file_name()
+		.and_then(|name| name.to_str())
+		.and_then(|name| registry.split(name))
+		.ok_or_else(|| {
+			retype_core::error::Diagnostic::global(Code::FormatUnknown, "the watched source format is unavailable")
+		})?;
+	let parsed = intent::parse(text).map_err(preparation_error)?;
+	build(shared, &registry, root, source, (stem, format), parsed, cancellation)
+}
+
+fn preparation_error(problems: retype_core::error::Diagnoses) -> retype_core::error::Error {
+	let code = problems
+		.first()
+		.map(retype_core::error::Error::code)
+		.unwrap_or(Code::JobState);
+	retype_core::error::Diagnostic::global(code, problems.to_string()).into()
+}
+
+fn build(
+	shared: &Shared,
+	registry: &Registry,
+	root: &Path,
+	source: &Path,
+	(stem, format): (&str, &str),
+	parsed: intent::Intent,
+	cancellation: &Cancellation,
+) -> retype_core::error::Result<Prepared> {
+	let policy = retype_core::policy::Policy::at(root, source.parent().unwrap_or(root))?;
+	if policy.paused || !policy.allows_path(source) {
+		return Err(retype_core::error::Diagnostic::global(
+			Code::Inapplicable,
+			format!("{} no longer permits this watched conversion", policy.path.display()),
+		)
+		.into());
+	}
+	let mut resolved = resolve::resolve(
 		&parsed,
 		Origin {
 			format,
 			is_directory: false,
 		},
-		&registry,
-	) {
-		Ok(resolved) => resolved,
-		Err(problems) => {
-			eprintln!("retype: {}: {problems}", reported.display());
-			return None;
-		}
-	};
-
-	let plans = match crate::fidelity::plans(&registry, &retype_core::tools::Machine, &resolved, &shared.state_dir) {
-		Ok(plans) => plans,
-		Err(problems) => {
-			eprintln!("retype: {}: {problems}", reported.display());
-			return None;
-		}
-	};
-
-	// The directory has the last word on what this intent may ask for, `docs/config.md`
-	// §12. A refused operation is reported and the job does not run: the file keeps the
-	// name its bytes fit.
-	if let Ok(policy) = shared.policies.policy(root, reported.parent().unwrap_or(root)).as_ref() {
-		let problems = policy.apply(&mut resolved);
-
-		if !problems.is_empty() {
-			eprintln!("retype: {}: {problems}", reported.display());
-			return None;
-		}
+		registry,
+	)
+	.map_err(preparation_error)?;
+	let problems = policy.apply(&mut resolved);
+	if !problems.is_empty() {
+		return Err(preparation_error(problems));
 	}
-
-	Some(Prepared {
+	let plans = crate::fidelity::plans_cancellable(
+		registry,
+		&retype_core::tools::CancellableMachine(cancellation),
+		&resolved,
+		&shared.state_dir,
+		cancellation,
+	)
+	.map_err(preparation_error)?;
+	Ok(Prepared {
+		root: root.to_path_buf(),
 		stem: stem.to_string(),
 		format: format.to_string(),
 		resolved,
@@ -1394,6 +1446,7 @@ fn run(
 	cancellation: &Cancellation,
 ) {
 	let Prepared {
+		root,
 		stem,
 		format,
 		resolved,
@@ -1478,10 +1531,10 @@ fn run(
 		None => source.to_path_buf(),
 	};
 	let input_is_temporary = renamed.as_ref().is_some_and(execute::Rename::is_temporary);
-	let snapshot = match retype_core::safety::Snapshot::open(&read_from) {
+	let snapshot = match retype_core::safety::Snapshot::open_cancellable(&read_from, cancellation) {
 		Ok(snapshot) => snapshot,
 		Err(error) => {
-			fail_before_conversion(shared, &started, "cannot create input snapshot", &error);
+			stop_before_watched_conversion(shared, &started, "cannot create input snapshot", &error, cancellation);
 			return;
 		}
 	};
@@ -1541,7 +1594,7 @@ fn run(
 				shared,
 				started,
 				snapshot.original.clone(),
-				true,
+				Some(&root),
 				force,
 				&error,
 				cancellation,
@@ -1781,7 +1834,7 @@ pub(super) fn park_storage(
 	shared: &Shared,
 	mut job: Job,
 	fingerprint: retype_core::safety::Fingerprint,
-	consume: bool,
+	watch_root: Option<&Path>,
 	force: bool,
 	error: &retype_core::error::Error,
 	cancellation: &Cancellation,
@@ -1798,7 +1851,8 @@ pub(super) fn park_storage(
 		requested: job.intent.clone(),
 		corrected: None,
 		dropped: Vec::new(),
-		consume,
+		consume: watch_root.is_some(),
+		watch_root: watch_root.map(Path::to_path_buf),
 		force,
 		input_fingerprint: Some(fingerprint),
 	});

@@ -482,6 +482,7 @@ fn parked_job(server: &Server, directory: &Path, reason: &str, state: JobState) 
 			corrected: None,
 			dropped: Vec::new(),
 			consume: false,
+			watch_root: None,
 			force: false,
 			input_fingerprint: Some(retype_core::safety::Fingerprint::of(&source).unwrap()),
 		}),

@@ -9,12 +9,12 @@
 //! `pending` job to run. What it is not is silent, because the record says it was
 //! parked and why.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use retype_core::error::Code;
 use retype_core::job::{Job, JobState, now_ms};
 
 use crate::daemon::immediate;
@@ -66,8 +66,7 @@ fn due(shared: &Shared, pool: &Pool) -> Vec<Job> {
 		.into_iter()
 		.filter(|job| {
 			is_due(job)
-				|| (job.state == JobState::NeedsAttention
-					&& job.parked.as_ref().is_some_and(|parked| parked.reason == "storage")
+				|| (waiting_for_storage(job)
 					&& store
 						.room_for(job.source.size, registry.undo())
 						.is_ok_and(|room| matches!(room, retype_core::undo::Room::Kept { .. })))
@@ -136,7 +135,7 @@ impl<'a> ParkedAdmission<'a> {
 		} = self;
 		let (intent, force) = match decision {
 			Decision::Deadline if is_due(&current) => (None, false),
-			Decision::Deadline if current.parked.as_ref().is_some_and(|parked| parked.reason == "storage") => {
+			Decision::Deadline if waiting_for_storage(&current) => {
 				let registry = shared.registry();
 				if !retype_core::undo::Store::open(&shared.state_dir)
 					.room_for(current.source.size, registry.undo())
@@ -159,7 +158,24 @@ impl<'a> ParkedAdmission<'a> {
 			.and_then(|parked| parked.input_fingerprint.as_ref())
 			.is_none()
 		{
-			return missing_fingerprint(shared, current, decision);
+			return missing_evidence(
+				shared,
+				current,
+				decision,
+				"the parked input has no recorded fingerprint; cancel this job, review the file and resubmit it",
+			);
+		}
+		if current
+			.parked
+			.as_ref()
+			.is_some_and(|parked| parked.consume && parked.watch_root.is_none())
+		{
+			return missing_evidence(
+				shared,
+				current,
+				decision,
+				"the parked input has no originating watch; cancel this job, review the file and resubmit it",
+			);
 		}
 		let work = work(&current, intent, force)
 			.ok_or_else(|| retype_core::error::Error::Io(std::io::Error::other("parked job has no intent to queue")))?;
@@ -192,8 +208,12 @@ fn admit(
 	}
 }
 
-fn missing_fingerprint(shared: &Shared, mut job: Job, decision: Decision<'_>) -> retype_core::error::Result<Admission> {
-	let message = "the parked input has no recorded fingerprint; cancel this job, review the file and resubmit it";
+fn missing_evidence(
+	shared: &Shared,
+	mut job: Job,
+	decision: Decision<'_>,
+	message: &str,
+) -> retype_core::error::Result<Admission> {
 	match decision {
 		Decision::Confirmed { .. } => Err(retype_core::error::Error::Diagnostic(
 			retype_core::error::Diagnostic::global(retype_core::error::Code::JobResumeUnavailable, message),
@@ -236,14 +256,23 @@ fn is_due(job: &Job) -> bool {
 	matches!(wait_condition(job), Some(WaitCondition::Deadline(deadline)) if deadline <= now_ms())
 }
 
+fn waiting_for_storage(job: &Job) -> bool {
+	job.state == JobState::NeedsAttention
+		&& job.parked.as_ref().is_some_and(|parked| parked.reason == "storage")
+		&& job
+			.error
+			.as_ref()
+			.is_none_or(|error| error.code != Code::JobResumeUnavailable.to_string())
+}
+
 pub fn work(job: &Job, intent: Option<&str>, force: bool) -> Option<Work> {
 	let intent = intent.map(str::to_string).or_else(|| job.intent.clone())?;
 
-	let consume = job.parked.as_ref().is_none_or(|parked| parked.consume);
+	let parked = job.parked.as_ref()?;
 
-	let kind = match consume {
+	let kind = match parked.consume {
 		true => Kind::Deferred {
-			root: job.source.path.parent().unwrap_or(Path::new("")).to_path_buf(),
+			root: parked.watch_root.clone()?,
 			source: job.source.path.clone(),
 			intent,
 			force,

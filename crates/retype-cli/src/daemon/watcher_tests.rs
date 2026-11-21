@@ -329,6 +329,127 @@ fn a_queued_watched_input_cannot_be_replaced_with_identical_bytes() {
 }
 
 #[test]
+fn a_parked_nested_job_fails_durably_when_its_inherited_policy_becomes_invalid() {
+	use crate::daemon::{queue::Kind, timer};
+	use retype_core::policy::FILE;
+
+	let (_dir, shared, pool, root) = admission_fixture();
+	let nested = root.join("nested");
+	std::fs::create_dir(&nested).unwrap();
+	let policy = root.join(FILE);
+	std::fs::write(&policy, "version = 'retype-config-1'\npatterns = ['nested/*.tar']\n").unwrap();
+	let bytes = archive_bytes();
+	let source = nested.join("bundle.tar");
+	let target = nested.join("bundle.zip+ask");
+	std::fs::write(&target, &bytes).unwrap();
+	decide(
+		&shared,
+		&pool,
+		&root,
+		retype_core::correlate::RenameFact {
+			source: source.clone(),
+			target: target.clone(),
+		},
+		None,
+	);
+
+	let journal = shared.state_dir.join("jobs.jsonl");
+	let (_, replay) = Journal::open(&journal).unwrap();
+	let job = &replay.jobs[0];
+	assert_eq!(job.state, JobState::NeedsAttention);
+	assert_eq!(job.parked.as_ref().unwrap().watch_root.as_deref(), Some(root.as_path()));
+	assert_eq!(
+		timer::start_confirmed(&shared, &pool, job, None, false).unwrap(),
+		timer::Admission::Queued
+	);
+	let work = timer::work(job, None, false).unwrap();
+	let Kind::Deferred {
+		root,
+		source,
+		intent,
+		force,
+	} = work.kind
+	else {
+		panic!("expected watched work")
+	};
+
+	std::fs::write(policy, "version = 'unsupported'\n").unwrap();
+	convert_deferred(
+		&shared,
+		&root,
+		&source,
+		&intent,
+		force,
+		&job.id,
+		&Cancellation::default(),
+	);
+	let (_, replay) = Journal::open(&journal).unwrap();
+	let failed = &replay.jobs[0];
+	assert_eq!(failed.state, JobState::Failed);
+	assert_eq!(failed.error.as_ref().unwrap().code, Code::CfgVersion.to_string());
+	assert_eq!(std::fs::read(&source).unwrap(), bytes);
+	assert!(!target.exists());
+	assert!(!source.with_extension("zip").exists());
+	assert!(
+		retype_core::undo::Store::open(&shared.state_dir)
+			.load(&job.id)
+			.unwrap()
+			.is_none()
+	);
+	pool.stop();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_deferred_plan_uses_the_inherited_limit_in_its_backend_arguments() {
+	let (_dir, shared, pool, root) = admission_fixture();
+	let fixture = "\
+version = 'retype-config-1'
+[backends]
+prefer = ['magick']
+[tools.magick]
+command = 'true'
+layout = ['{input}', '{ops}', '{output}']
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+[ops.quality]
+slot = 5
+param = { class = 'int', min = 1, max = 100 }
+formats = ['webp']
+[ops.quality.argv.magick]
+args = ['-quality', '{value}']
+";
+	shared.reload_registry(Registry::load(fixture).unwrap());
+	let nested = root.join("nested");
+	std::fs::create_dir(&nested).unwrap();
+	std::fs::write(
+		root.join(retype_core::policy::FILE),
+		"version = 'retype-config-1'\n[limits]\nquality = 55\n",
+	)
+	.unwrap();
+	let prepared = prepare_from(
+		&shared,
+		&root,
+		&nested.join("photo.png"),
+		"webp+quality95",
+		&Cancellation::default(),
+	)
+	.unwrap();
+	let argv = prepared.plans[0].argv(Path::new("photo.png"), Path::new("photo.webp"));
+	assert!(argv.windows(2).any(|pair| pair == ["-quality", "55"]), "{argv:?}");
+	assert!(!argv.iter().any(|arg| arg == "95"));
+	pool.stop();
+}
+
+#[test]
 fn a_watched_rename_restores_the_exact_source_case() {
 	let (_dir, shared, pool, photos) = admission_fixture();
 	std::fs::write(photos.join("bundle.zip"), b"original bytes").unwrap();

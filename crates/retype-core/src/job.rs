@@ -458,6 +458,9 @@ pub struct Parked {
 	/// rename asked for and false for one a client submitted.
 	#[serde(default)]
 	pub consume: bool,
+	/// Originating registration, needed to recheck inherited policy after a wait.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub watch_root: Option<PathBuf>,
 	/// Whether the confirmed resolution permits replacing existing outputs.
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub force: bool,
@@ -768,6 +771,7 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: true,
+			watch_root: Some(PathBuf::from("photos")),
 			force: false,
 			input_fingerprint: None,
 		});

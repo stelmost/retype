@@ -364,6 +364,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			corrected: None,
 			dropped: Vec::new(),
 			consume: false,
+			watch_root: None,
 			force: request.force,
 			input_fingerprint: Some(snapshot.original.clone()),
 		});
@@ -416,7 +417,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 				shared,
 				started,
 				snapshot.original.clone(),
-				false,
+				None,
 				request.force,
 				error,
 				cancellation,

@@ -42,7 +42,7 @@ pub enum Verdict {
 pub fn decide(
 	shared: &Shared,
 	pool: &Pool,
-	_root: &Path,
+	root: &Path,
 	source: &Path,
 	target: &Path,
 	id: &JobId,
@@ -73,6 +73,7 @@ pub fn decide(
 
 			return park(
 				shared,
+				root,
 				&stem,
 				source,
 				&format,
@@ -103,7 +104,8 @@ pub fn decide(
 		Ok(resolved) => resolved,
 		Err(problems) => {
 			return uncarried(
-				shared, pool, source, &stem, &format, target, id, batch, &parsed, requested, problems, policy, None,
+				shared, pool, root, source, &stem, &format, target, id, batch, &parsed, requested, problems, policy,
+				None,
 			);
 		}
 	};
@@ -115,6 +117,7 @@ pub fn decide(
 		return uncarried(
 			shared,
 			pool,
+			root,
 			source,
 			&stem,
 			&format,
@@ -140,6 +143,7 @@ pub fn decide(
 			return uncarried(
 				shared,
 				pool,
+				root,
 				source,
 				&stem,
 				&format,
@@ -164,6 +168,7 @@ pub fn decide(
 	if !resolved.meta.now && !shared.registry().watch().admits(bytes) {
 		return park(
 			shared,
+			root,
 			&stem,
 			source,
 			&format,
@@ -186,6 +191,7 @@ pub fn decide(
 	if resolved.meta.ask {
 		return park(
 			shared,
+			root,
 			&stem,
 			source,
 			&format,
@@ -208,6 +214,7 @@ pub fn decide(
 	if !resolved.meta.now && cost_defers(shared, policy, &estimate, bytes) {
 		return park(
 			shared,
+			root,
 			&stem,
 			source,
 			&format,
@@ -235,6 +242,7 @@ pub fn decide(
 fn uncarried(
 	shared: &Shared,
 	pool: &Pool,
+	root: &Path,
 	source: &Path,
 	stem: &str,
 	format: &str,
@@ -254,6 +262,7 @@ fn uncarried(
 		if let Some(verdict) = repair(
 			shared,
 			pool,
+			root,
 			source,
 			format,
 			target,
@@ -269,6 +278,7 @@ fn uncarried(
 
 	park(
 		shared,
+		root,
 		stem,
 		source,
 		format,
@@ -488,6 +498,7 @@ struct Correction {
 fn repair(
 	shared: &Shared,
 	pool: &Pool,
+	root: &Path,
 	source: &Path,
 	format: &str,
 	target: &Path,
@@ -581,6 +592,7 @@ fn repair(
 			corrected: Some(correction.text.clone()),
 			dropped: correction.dropped.clone(),
 			consume: true,
+			watch_root: Some(root.to_path_buf()),
 			force: false,
 			input_fingerprint: Some(input_fingerprint),
 		}),
@@ -667,6 +679,7 @@ struct Parking<'a> {
 #[allow(clippy::too_many_arguments)]
 fn park(
 	shared: &Shared,
+	root: &Path,
 	stem: &str,
 	source: &Path,
 	format: &str,
@@ -793,6 +806,7 @@ fn park(
 				.map(|correction| correction.dropped.clone())
 				.unwrap_or_default(),
 			consume: parking.consume,
+			watch_root: Some(root.to_path_buf()),
 			force: false,
 			input_fingerprint: Some(input_fingerprint),
 		}),

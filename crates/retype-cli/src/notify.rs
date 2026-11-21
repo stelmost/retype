@@ -582,6 +582,7 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: true,
+			watch_root: None,
 			force: false,
 			input_fingerprint: None,
 		});
