@@ -273,6 +273,26 @@ fn resume_is_durably_queued_once_and_can_be_cancelled_before_starting() {
 }
 
 #[test]
+fn a_cancelled_resume_keeps_the_original_ledger_and_prior_output() {
+	let directory = tempfile::tempdir().unwrap();
+	let server = server(&directory.path().join("state"));
+	let job = partial_job(&server, directory.path());
+	let cancellation = retype_core::execute::Cancellation::default();
+	cancellation.cancel();
+	super::super::resume::run_queued(&server.shared, &job, false, &cancellation);
+
+	let (_, replay) = retype_core::journal::Journal::open(&server.shared.state_dir.join("jobs.jsonl")).unwrap();
+	let cancelled = replay.jobs.iter().find(|entry| entry.id == job.id).unwrap();
+	assert_eq!(cancelled.state, JobState::Cancelled);
+	assert_eq!(cancelled.error.as_ref().unwrap().code, Code::JobCancelled.to_string());
+	assert_eq!(cancelled.outputs[0], job.outputs[0]);
+	assert!(!job.outputs[1].path.exists());
+	let store = retype_core::undo::Store::open(&server.shared.state_dir);
+	assert!(store.load(&job.id).unwrap().unwrap().pinned);
+	assert!(store.source(&job.id).unwrap().is_some());
+}
+
+#[test]
 #[cfg(unix)]
 fn a_running_resume_answers_promptly_and_uses_pool_cancellation() {
 	let directory = tempfile::tempdir().unwrap();

@@ -90,11 +90,12 @@ fn run_cancellable(
 		)
 	})?;
 
-	let plans = crate::fidelity::plans(
+	let plans = crate::fidelity::plans_cancellable(
 		&shared.registry(),
-		&retype_core::tools::Machine,
+		&retype_core::tools::CancellableMachine(cancellation),
 		&resolved,
 		&shared.state_dir,
+		cancellation,
 	)
 	.map_err(|problems| {
 		Diagnostic::global(
@@ -106,8 +107,11 @@ fn run_cancellable(
 	let store = Store::open(&shared.state_dir);
 	let lease = store.lease(&job.id)?;
 	store.pin(&job.id)?;
-	let retained = source_bytes(shared, job)?;
-	let snapshot = retype_core::safety::Snapshot::open(&retained)?;
+	/* Never substitute a live pathname for this job's verified retained original. */
+	let retained = store
+		.source_cancellable(&job.id, cancellation)?
+		.ok_or_else(|| unavailable("the undo record does not hold the source bytes"))?;
+	let snapshot = retype_core::safety::Snapshot::open_cancellable(&retained, cancellation)?;
 	let input = snapshot.path.clone();
 	let ledger = store.load(&job.id)?.ok_or_else(|| unavailable("no recovery ledger"))?;
 	let recovery = store.retain(lease, Some(ledger))?;
@@ -128,7 +132,10 @@ fn run_cancellable(
 				if still_produced(recorded)
 					&& ledger.commits.iter().any(|commit| {
 						commit.output.path == recorded.path
-							&& commit.fingerprint.matches(&recorded.path).unwrap_or(false)
+							&& commit
+								.fingerprint
+								.matches_cancellable(&recorded.path, cancellation)
+								.unwrap_or(false)
 					}) {
 					outputs.push(recorded.clone());
 					continue;
@@ -284,17 +291,6 @@ fn run_cancellable(
 	}
 	crate::daemon::watcher::publish_persisted(shared, &resumed);
 	Ok(state)
-}
-
-/// Never substitute a live pathname for the job's verified retained original.
-fn source_bytes(shared: &Shared, job: &Job) -> Result<PathBuf> {
-	if let Some(bytes) = Store::open(&shared.state_dir).source(&job.id)? {
-		return Ok(bytes);
-	}
-
-	Err(unavailable(
-		"neither the source path nor the undo record holds the source bytes",
-	))
 }
 
 fn output_path(source: &std::path::Path, resolved: &resolve::Resolved, index: usize) -> PathBuf {
