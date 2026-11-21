@@ -2,6 +2,8 @@
 
 Use a native Linux, macOS or Windows checkout. WSL does not exercise Windows APIs. Rust unit and integration tests remain in their Cargo crates; this directory contains preparation, runners and standalone diagnostics. Production release assembly remains in `scripts/`.
 
+The required initial-release targets are Windows 10 22H2 amd64, Debian 13 amd64 and macOS 15 arm64. Other desktop combinations are best effort. Physical-hardware power, sleep/wake and device checks are deferred; original-byte preservation, replacement refusal, recovery and unsupported-path refusal are not. Hosted Server/container tests do not qualify client desktops or a changed release candidate.
+
 ## Prepare
 
 Install a supported Rust toolchain with `rustfmt`, Clippy and native build tools. The strict runner also needs cargo-nextest:
@@ -58,11 +60,15 @@ Compilation has its own deadline before the shared execution budget starts. Each
 ## Standalone checks and diagnostics
 
 - `tests/install.sh`: Local Unix installer/update/rollback checks; Linux desktop/URI integration, native GIO launch from a custom prefix, symlinked MIME preferences, preserved service state and removal/rollback
-- `tests/installed.py <archive> --report <dir>`: Real Debian archive install, conversions, fidelity discovery, undo, update and checksum refusal
+- `tests/installed.py <archive> --preview --report <dir>`: Linux exact preview archive, all 17 desktop/URI/service/data checks; Python 3.12+, exact executable/manifest bytes and selected packaged claims
+- `tests/installed.py <archive> --preview-cli-only --allow-user-integration --report <dir>`: Windows unsigned CLI/data/PATH smoke on an explicitly approved disposable profile; owned PATH cleanup, not signed/desktop qualification
+- macOS `tests/installed.py --preview` also requires `--allow-user-integration` on an explicitly authorized real-user profile; never grant that consent automatically in hosted CI
+- `tests/test_installed.py`: Synthetic assertion regression; matching builds earn evidence, changed builds report unverified, and self-consistent wrong manifest claims fail
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry
 - `tests/windows-storage-faults.ps1 -Worker <core-test-exe> -Report <new-dir>`: Actual disk exhaustion on a new 64 MiB virtual NTFS disk; requires an elevated orchestrator and active ordinary-user desktop, retains evidence and detaches the disk
-- `tests/install.ps1 -Binary <path>`: Local Windows installer/update/rollback checks, normally invoked by Cargo
-- `tests/release.sh`: Synthetic release-assembly and checksum failures, intended for Linux release CI
+- `tests/install.ps1 -Binary <path> [-Report <new-dir>]`: Windows installer/update/removal fixture with narrow registry/PATH doubles, normally invoked by Cargo; native fixture runtime and its existing 60-second Cargo budget still need qualification
+- `tests/release.sh`: Synthetic release-assembly and checksum failures, intended for Linux release CI; failed fixtures retained before cleanup
+- `python3 scripts/embed-trust.py --check <installer>`: Canonical dependency-complete verifier block consistency, not publisher/native trust
 - `tests/hyperv-info.ps1`: Read-only Hyper-V host/guest collection; see `docs/dev/hyperv.md`
 - `tests/hyperv-check.ps1`: Synthetic collector checks without a VM
 - `tests/probe-supersede.sh`: Detailed Unix watcher/supersession investigation, outside the release gate

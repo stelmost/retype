@@ -4,23 +4,23 @@ Supported targets, delivery tiers and their consequences.
 
 ## 1. Support matrix
 
-| Platform | Minimum | Architectures | Status |
+| Platform | Supported OS for the initial release | Required architecture | Other combinations |
 |---|---|---|---|
-| Linux | Current Debian stable: Debian 13 (trixie), glibc 2.41 | x86_64, aarch64 | Initial release: amd64 (x86_64) supported; ARM64 (aarch64) best effort |
-| macOS | 13 Ventura | x86_64, aarch64 | Supported |
-| Windows | 10 21H2 | x86_64, aarch64 | Supported |
-| BSD | FreeBSD 13, OpenBSD 7 | x86_64 | Later, CLI only, no support commitment |
-| WSL 2 | Current | x86_64 | Best effort, unsupported |
-| Android, iOS | | | Out of scope |
+| Linux | Debian 13 (trixie), glibc 2.41 | amd64 (x86_64) | Best effort |
+| macOS | macOS 15 | arm64 (aarch64) | Best effort |
+| Windows | Windows 10 22H2 | amd64 (x86_64) | Best effort |
+| BSD, WSL 2 | No support commitment | None | Best effort |
+| Android, iOS | Out of scope | None | Out of scope |
 
-The initial Linux release targets amd64. ARM64 support is best effort, based on the completed native Debian 13 container checks: strict workspace and daemon interruption tests, architecture-specific converter fidelity, and exact installed-archive validation. [Qualification run 44814840504](https://github.com/lapilliworks/retype/actions/runs/44814840504) passed these checks on both architectures. ARM64 desktop and full Debian kernel/device qualification are not initial-release gates. Physical power-loss qualification is [deferred](../dev/testing.md#initial-linux-release-scope).
+This is the current initial-release scope, not a permanent platform policy. Other desktop OS versions and architectures are not mandatory qualification gates. Physical-hardware power-loss, sleep/wake and device qualification is [deferred](../dev/testing.md#initial-release-scope). The GUI and managed converter toolchain are not part of this release.
 
-Reasoning, not preference:
+Required qualification uses the exact release candidate on each supported OS and architecture. Hosted Windows Server compatibility CI does not establish Windows 10 22H2 or interactive desktop behavior. Native Windows 10 22H2 qualification remains required before release approval. Container and controlled-session results do not establish real desktop login or notification behavior.
 
-- Windows 10 21H2 is the floor for unpackaged toast notifications with an AppUserModelID
-- macOS 13 is the floor for the notification API generation the notifier bundle uses, and it is old enough that no supported Mac is excluded
+Earlier [Debian qualification run 44814840504](https://github.com/lapilliworks/retype/actions/runs/44814840504) passed native userspace, interruption, architecture-specific fidelity and installed-archive checks on amd64 and ARM64 for its recorded revision. That evidence does not qualify a changed release candidate or promote ARM64 from best effort.
+
 - Linux desktop support is Wayland-only; X11 is unsupported
-- Linux support targets current Debian stable, currently Debian 13 (trixie). Other distributions and Debian unstable are development or portability environments, without a support commitment. Linux builds and qualification use the stable userspace; the older Debian 11/glibc 2.31 floor is retired
+- Linux builds and qualification use Debian 13 stable userspace; the older Debian 11/glibc 2.31 floor is retired
+- Other desktop combinations may work, but carry no initial-release support commitment
 
 ## 2. Toolchain
 
@@ -55,16 +55,16 @@ Nothing in the product requires an attribute or a stream. Identity is the mechan
 
 ## 5. Delivery tiers
 
-Two delivery tiers are defined, and they differ in what they install. Pre-release installer routes sit outside them.
+Two delivery tiers are defined. Explicit previews sit outside the signed installed tier; signed/native release approval remains blocked until all required inputs and gates are complete.
 
 | Tier | How | Contains | Supported |
 |---|---|---|---|
 | Source | `cargo install --git`, or a Homebrew source formula | The CLI binary only | As a workaround, for people who build their own |
-| Installed | Platform installer, signed | CLI, daemon, notifier bundle, URI scheme registration, service definition. No external tool binaries | Yes |
+| Installed | Platform installer, signed | CLI, daemon, notifier bundle, URI scheme registration, opt-in startup. No external tool binaries | Supported matrix, after signed/native release approval |
 
 `cargo install` is **CLI only and a workaround**. The binary can run the daemon in the foreground and `retype watch` registrations persist, but it cannot install a user service, register a URI scheme on macOS, or create a Start-menu shortcut on Windows. The documentation states this rather than implying feature parity.
 
-Linux, macOS and Windows have pre-release installers.
+Installer entrypoints are signed by default and refuse missing trust inputs. Preview must be selected explicitly with `RETYPE_INSTALL_MODE=preview`; it never satisfies signed publication or native installed qualification.
 
 Linux and macOS:
 
@@ -78,21 +78,21 @@ Windows, in PowerShell:
 irm https://retype.name/install.ps1 | iex
 ```
 
-They download the release archive for the host architecture, check its SHA-256 against the release checksums, and install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows. The Windows installer adds its `bin` directory to the user `PATH`. Running either again updates the installation. On Linux, the installer requires Python 3 and `xdg-mime`, installs the notification/URI desktop entry and a disabled systemd user unit, and registers `retype://` for the current user. Updates preserve service enablement and user edits; `--uninstall` removes the owned installation while preserving configuration, watch registrations and recovery data. macOS and Windows pre-release installers do not install their service or notifier integration. These archives are not code-signed, so all three pre-release routes remain outside the signed installed tier. They exist so an alpha build can be installed without a Rust toolchain.
+Signed mode authenticates the final publisher manifest before extraction or helper execution and verifies native signatures independently. Preview checksums detect corruption, not publisher identity. Windows preview installs the CLI/assets and adds its owned `bin` token to user `PATH`, without URI/notifier/startup integration. Linux retains its notification/URI desktop entry and disabled systemd user unit, requires Python 3 and `xdg-mime`, and preserves service enablement and user edits on update. Unix `--uninstall` and Windows `-Uninstall` preserve configuration, watches and recovery data. macOS native bundle, safe extraction, metadata/staple preservation and real-user integration remain unqualified; no private or ephemeral HOME is accepted as desktop proof.
 
 What the installed-tier installer does, per platform:
 
 | Platform | Actions |
 |---|---|
 | Linux | Binary, notifier desktop entry, `retype://` via `xdg-mime`, systemd user unit (not enabled) |
-| macOS | App bundle containing the CLI and the notifier, `LSBackgroundOnly` agent, launchd user agent, scheme registered in the bundle |
+| macOS | Prebuilt app with the exact signed CLI and notifier/URL shim, scheme registration, launchd only with explicit `--enable-startup` |
 | Windows | Binary, Start-menu shortcut carrying the AppUserModelID, registry entries for `retype://`, optional startup entry |
 
 None of these actions is performed implicitly by running the binary.
 
 ### 5.1 Tool acquisition
 
-External tools are not part of the installer. Acquisition differs by interface: the CLI does not manage tools, while the GUI does.
+External tools are not part of the installer. The GUI and its managed converter toolchain are outside this initial release. Acquisition differs by interface: the CLI does not manage tools, while the separate GUI contract does.
 
 A CLI user installs tools with the platform's package manager or by hand, then leaves them on `PATH` or pins an absolute path in configuration. A source build has no other route. The GUI manages a signed set for users who may not know what the tools are, may not know what a package manager is, or may not want to bother.
 
@@ -111,15 +111,15 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 | Platform | Requirement | When |
 |---|---|---|
 | macOS | Developer ID, hardened runtime, notarisation for every distributed binary | Before the first published binary |
-| Windows | Azure Trusted Signing or an equivalent certificate; SmartScreen reputation accrues to the publisher identity | Before the first published binary |
-| Linux | Detached signatures and checksums; no central authority | With the first non-preview release artifact |
+| Windows | Authenticode, independently pinned publisher certificate and secure timestamp; existing stable certificate is the provisional signing selector | Before tagged publication |
+| Linux | Publisher-signed `SHA256SUMS.minisig` and checksums | Before tagged publication |
 | Toolchain, Windows | Authenticode with a secure timestamp on every artifact | With the first managed artifact |
 | Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
 | Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
 Publisher identity is fixed: Lapilli Works LLC. The GUI is `com.lapilliworks.retype`, the CLI is `com.lapilliworks.retype.cli`, and a standalone notifier is `com.lapilliworks.retype.notifier`. The display name is `retype`. Reputation is bound to the publisher identity, so it is never changed casually.
 
-The pre-release installers are not published binaries in the signing sense. Their releases publish SHA-256 checksums and GitHub build attestations. The installers reject a corrupted download, and the attestation can be checked out of band, but neither authenticates the publisher the way a platform signature does. The installed tier remains gated on the signatures in the table above.
+All tagged archives and generated standalone installer closure require the final publisher-signed `SHA256SUMS.minisig`. Canonical verifier blocks are embedded from trusted source before checksums; no downloaded verifier is bootstrapped. Publisher keys, native certificate/Team pins and existing signing selectors must be independently approved, not inferred from downloaded assets or test fixtures. Both macOS app and CLI use the fixed `com.lapilliworks.retype.cli` identifier. Manual dispatch produces non-publishing preview artifacts; checksums and GitHub attestations do not authenticate the publisher and cannot satisfy the installed tier.
 
 The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 
@@ -139,10 +139,7 @@ The daemon owns `retype://` and OS notifications. The GUI does not register eith
 
 | Target | Why |
 |---|---|
-| 32-bit x86 | No population, and doubling the build matrix for nothing |
-| macOS 12 and older | Well below current support, and fragments the notification code |
-| Windows 8.1 and older | No modern toast API |
 | Android, iOS | No rename surface to hang the product on |
-| Other Linux distributions and Debian oldstable/testing/unstable | May work; current Debian stable is the supported Linux baseline |
+| GUI and managed converter toolchain | Not part of this CLI and daemon release |
 | Network filesystems | Not supported yet; see [Watch scope](watch.md) §9 |
 | Fonts, 3D, CAD formats | Not formats this product converts |

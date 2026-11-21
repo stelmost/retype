@@ -10,10 +10,12 @@ A file watcher and a command line tool that convert a file when you rename its
 extension. `photo.heic` becomes `photo.jpg`, and the bytes follow the name.
 Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
-- Cross platform: current Debian stable on Linux, macOS, Windows
+- Initial release: Debian 13 amd64, macOS 15 arm64, Windows 10 22H2 amd64
 - Local only: no upload, no account, no telemetry
 - Scriptable, with the same intent string accepted by the filename, the command
   line and the editor
+
+Other desktop OS and architecture combinations are best effort, not qualification gates. Physical-hardware power, sleep/wake and device checks are deferred. This release covers the CLI and daemon, not the GUI or managed converter toolchain.
 
 ## Documentation
 
@@ -30,7 +32,7 @@ convenience on top of the source tier, not a third tier.
   binary includes the daemon, but no service, URI registration or notifier
   bundle is installed. A workaround, not the supported path
 
-Linux, macOS and Windows can install the alpha release without a Rust toolchain.
+Installer entrypoints do not require a Rust toolchain. Signed mode is the default and fails closed without approved publisher material; the first signed/native release is not yet qualified. Manual build artifacts are explicit previews, not signed installed delivery.
 
 Linux and macOS:
 
@@ -44,7 +46,7 @@ Windows, in PowerShell:
 irm https://retype.name/install.ps1 | iex
 ```
 
-The scripts verify the release checksum, install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows, and update that installation when run again. The Windows installer adds its `bin` directory to the user `PATH`. The default release selection includes prereleases. On Linux, the installer requires Python 3 and `xdg-mime`, installs the notification/URI desktop entry and a disabled user-service unit, and registers `retype://`. Linux desktop support is Wayland-only. Run the same installer with `--uninstall` to remove that installation while keeping configuration and recovery data. macOS and Windows pre-release integration is unchanged. Publisher signing remains required for the installed tier.
+The signed route authenticates the publisher manifest and native signatures before extraction or helper execution. Preview must be selected explicitly with `RETYPE_INSTALL_MODE=preview`; checksums and build attestations are not publisher trust. Windows preview installs the CLI/assets and adds its owned `bin` token to user `PATH`, but does not install URI/notifier/startup integration. Linux keeps its desktop/URI definition and disabled user-service unit, with Python 3 and `xdg-mime` required and Wayland-only desktop support. Unix `--uninstall` and Windows `-Uninstall` preserve configuration and recovery data. macOS bundle/extraction/native-user qualification and all signed release inputs remain blocked; see [release packaging](packaging/README.md).
 
 Updates validate the staged binary before publication, retain the previous installation in a `share/retype-backup.*` or `share/retype-backup-*` directory under the prefix, and restore it on installation failure. The scripts print the backup path; old backups are not automatically pruned.
 

@@ -471,7 +471,7 @@ holiday.heic &rarr; holiday.webp+now</code></pre>
 				<header class="section-head" data-reveal>
 					<p class="kicker">05 / Install</p>
 					<h2>Pre-alpha, on purpose.</h2>
-					<p class="section-lede">The CLI and daemon install today. Some intent tokens are still being wired. The manual says which. The pre-release installer is a convenience, not the signed installed tier.</p>
+					<p class="section-lede">The CLI and daemon have preview builds. Signed installed delivery remains gated on publisher, native desktop, and safety qualification. A green build or preview smoke is not a release pass.</p>
 				</header>
 
 				<div class="install-grid">
@@ -488,7 +488,7 @@ holiday.heic &rarr; holiday.webp+now</code></pre>
 								<code>curl -fsSL https://retype.name/install.sh | bash</code>
 								<button type="button" data-copy aria-label="Copy Unix install command">Copy</button>
 							</div>
-							<p class="small">Installs the CLI, daemon, and shared release assets under <code>~/.local</code>. Verifies the release checksum.</p>
+							<p class="small">Signed-mode entrypoint for <code>~/.local</code>; missing trust inputs refuses installation. Preview is explicit. macOS native bundle/extraction qualification remains blocked.</p>
 						</div>
 
 						<div class="tab-panel" id="install-windows" role="tabpanel" aria-labelledby="tab-windows" hidden>
@@ -510,18 +510,19 @@ holiday.heic &rarr; holiday.webp+now</code></pre>
 						</div>
 
 						<ul class="requirements">
-							<li><span>Platforms</span> Current Debian stable, macOS 13+, Windows 10 21H2+</li>
+							<li><span>Initial release</span> Debian 13 amd64, macOS 15 arm64, Windows 10 22H2 amd64</li>
+							<li><span>Other targets</span> Best effort; physical power, sleep/wake and device checks deferred</li>
 							<li><span>Converters</span> Install only the tools for the formats you use</li>
-							<li><span>Download</span> The installer verifies the release checksum before use</li>
+							<li><span>Trust</span> Signed by default, no implicit preview fallback; native release gates remain blocked</li>
 						</ul>
 					</div>
 
 					<aside class="install-note" data-reveal>
 						<p class="kicker">Read the fine print</p>
-						<h3>What the pre-release installer does not do</h3>
+						<h3>What a preview does not prove</h3>
 						<ul class="check-list">
-							<li>It does not install a user service, register <code>retype://</code>, or ship the notifier. That is the signed installed tier.</li>
-							<li>It is not code-signed. The release publishes SHA-256 checksums and GitHub attestations instead.</li>
+							<li>Linux installs desktop/URI integration and a disabled user-service unit. Startup is opt-in; platform details are in the manual.</li>
+							<li>Windows preview is CLI/data/PATH smoke, not URI, notifier, startup, or Windows 10 desktop qualification. Checksums and attestations are not publisher trust.</li>
 							<li>It does not install a converter. ImageMagick, FFmpeg, pandoc, and 7-Zip come from your package manager.</li>
 						</ul>
 						<p class="aside-link"><a href="/docs/">The quickstart has the package-manager commands <span aria-hidden="true">&rarr;</span></a></p>

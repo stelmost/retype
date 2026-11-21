@@ -40,7 +40,7 @@ sites/bin/bundle.sh
 
 `bundle.sh` runs both builds and assembles `sites/dist`: the product page at the root, the manual at `/docs/`. The page's manual links are absolute `/docs/...html` paths, so the bundle is served from the host root.
 
-The build copies `packaging/install.sh` and `packaging/install.ps1` to `/install.sh` and `/install.ps1`, so the page commands and the release assets are the same files.
+The build copies the canonical source `packaging/install.sh` and `packaging/install.ps1` to `/install.sh` and `/install.ps1`. Shared CI requires `scripts/embed-trust.py --check` for both complete verifier closures; release assembly generates those same canonical contents before final checksums and signing. No downloaded verifier is imported by the streamed installers. Signed publication remains gated independently of this static-site build.
 
 ## Notes
 
