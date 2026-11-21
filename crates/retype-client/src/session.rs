@@ -150,7 +150,7 @@ pub fn spawn_detached(context: &Context) -> Result<Spawned> {
 	state::ensure_private_directory(&context.state_dir)?;
 
 	let log = context.state_dir.join("daemon.log");
-	let stdout = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+	let stdout = retype_core::safety::open_metadata_file(&log, retype_core::safety::MetadataAccess::Append)?;
 	let stderr = stdout.try_clone()?;
 
 	let mut command = Command::new(context.daemon.program());

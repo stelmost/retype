@@ -261,8 +261,88 @@ impl Fingerprint {
 	}
 }
 
+/// Metadata is checked before the caller can truncate it; no mode truncates while opening.
+#[derive(Clone, Copy)]
+pub enum MetadataAccess {
+	Read,
+	Append,
+	Update,
+}
+
+/// State files may not alias user data. Preserve normal sharing for locks and journal readers.
+pub fn open_metadata_file(path: &Path, access: MetadataAccess) -> io::Result<File> {
+	let mut options = OpenOptions::new();
+	options.read(true);
+	match access {
+		MetadataAccess::Read => {}
+		MetadataAccess::Append => {
+			options.append(true).create(true);
+		}
+		MetadataAccess::Update => {
+			options.write(true).create(true);
+		}
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.mode(0o600);
+	}
+	let file = open_regular_file(path, &mut options)?;
+	#[cfg(unix)]
+	let links = {
+		use std::os::unix::fs::MetadataExt;
+		file.metadata()?.nlink()
+	};
+	#[cfg(windows)]
+	let links = {
+		use std::os::windows::io::AsRawHandle;
+		use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+		let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+		if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) } == 0 {
+			return Err(io::Error::last_os_error());
+		}
+		u64::from(information.nNumberOfLinks)
+	};
+	#[cfg(not(any(unix, windows)))]
+	let links = 1;
+	if links != 1 {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidData,
+			format!(
+				"{} has multiple hard links; state metadata cannot alias another file",
+				path.display()
+			),
+		));
+	}
+	Ok(file)
+}
+
+pub fn read_metadata(path: &Path) -> io::Result<Vec<u8>> {
+	let mut file = open_metadata_file(path, MetadataAccess::Read)?;
+	let mut bytes = Vec::new();
+	file.read_to_end(&mut bytes)?;
+	Ok(bytes)
+}
+
+pub fn read_metadata_text(path: &Path) -> io::Result<String> {
+	let mut file = open_metadata_file(path, MetadataAccess::Read)?;
+	let mut text = String::new();
+	file.read_to_string(&mut text)?;
+	Ok(text)
+}
+
 /// Open a regular file without following its final component; Windows excludes mutation sharing.
 pub(crate) fn open_guarded_file(path: &Path, mut options: OpenOptions) -> io::Result<File> {
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+		options.share_mode(FILE_SHARE_READ);
+	}
+	open_regular_file(path, &mut options)
+}
+
+fn open_regular_file(path: &Path, options: &mut OpenOptions) -> io::Result<File> {
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::OpenOptionsExt;
@@ -271,12 +351,8 @@ pub(crate) fn open_guarded_file(path: &Path, mut options: OpenOptions) -> io::Re
 	#[cfg(windows)]
 	{
 		use std::os::windows::fs::OpenOptionsExt;
-		use windows_sys::Win32::Storage::FileSystem::{
-			FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ,
-		};
-		options
-			.share_mode(FILE_SHARE_READ)
-			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH);
+		use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH};
+		options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH);
 	}
 	let file = options.open(path)?;
 	let metadata = file.metadata()?;
@@ -298,21 +374,9 @@ pub(crate) fn open_guarded_file(path: &Path, mut options: OpenOptions) -> io::Re
 }
 
 fn regular_file(path: &Path) -> io::Result<File> {
-	if !fs::symlink_metadata(path)?.file_type().is_file() {
-		return Err(io::Error::other(format!("{} is not a regular file", path.display())));
-	}
 	let mut options = OpenOptions::new();
 	options.read(true);
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::OpenOptionsExt;
-		options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-	}
-	let file = options.open(path)?;
-	if !file.metadata()?.is_file() {
-		return Err(io::Error::other("input changed while opening"));
-	}
-	Ok(file)
+	open_regular_file(path, &mut options)
 }
 
 fn changed(path: &Path) -> Error {

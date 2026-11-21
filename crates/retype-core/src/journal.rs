@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -69,28 +69,26 @@ impl Journal {
 	/// copied aside before readable records replace it, so the next append cannot
 	/// extend a file that would fail to replay again.
 	pub fn open(path: &Path) -> Result<(Self, Replay)> {
-		let replay = replay(path)?;
-
-		if let Some(quarantined) = &replay.quarantined {
-			quarantine_copy(path, quarantined)?;
-		} else if replay.torn {
-			// Drop the partial line before opening for append. Leaving it would make
-			// it a non-trailing line as soon as the next record is written, which
-			// turns an interrupted write into corruption on the following start.
-			truncate_torn(path)?;
-		}
-
-		if let Some(parent) = path.parent() {
+		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
 			crate::fsx::create_dir_all_durable(parent)?;
 			set_private_directory(parent)?;
 		}
 
-		let file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+		let mut file = crate::safety::open_metadata_file(path, crate::safety::MetadataAccess::Update)?;
 		set_private_file(&file)?;
+		let mut contents = Vec::new();
+		file.read_to_end(&mut contents)?;
+		let replay = replay(path, &contents);
+		if let Some(quarantined) = &replay.quarantined {
+			quarantine_copy(&contents, quarantined)?;
+		} else if replay.torn {
+			truncate_torn(&file, &contents)?;
+		}
+		drop(file);
 
 		let mut journal = Self {
 			path: path.to_path_buf(),
-			file,
+			file: crate::safety::open_metadata_file(path, crate::safety::MetadataAccess::Append)?,
 			health: JournalHealth::Writable,
 		};
 		if replay.quarantined.is_some() {
@@ -108,8 +106,9 @@ impl Journal {
 	/// crash leaves either the old file or the new one, never a half-written
 	/// journal.
 	pub fn compact(&mut self, retention: Duration) -> Result<Compact> {
-		let replay = replay(&self.path)?;
-		let lines = self.lines()?;
+		let contents = crate::safety::read_metadata(&self.path)?;
+		let replay = replay(&self.path, &contents);
+		let lines = contents.iter().filter(|byte| **byte == b'\n').count();
 		let superseded = lines.saturating_sub(replay.jobs.len());
 
 		if lines <= MAX_LINES && superseded <= replay.jobs.len() {
@@ -134,18 +133,12 @@ impl Journal {
 		})
 	}
 
-	fn lines(&self) -> Result<usize> {
-		match fs::read(&self.path) {
-			Ok(bytes) => Ok(bytes.iter().filter(|byte| **byte == b'\n').count()),
-			Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-			Err(error) => Err(Error::Io(error)),
-		}
-	}
-
 	/// Write `jobs` to a temporary file and rename it into place, then reopen the
 	/// handle, which now points at the replacement.
 	fn rewrite(&mut self, jobs: &[Job]) -> Result<()> {
-		self.rewrite_with(jobs, |path| fs::OpenOptions::new().append(true).open(path))
+		self.rewrite_with(jobs, |path| {
+			crate::safety::open_metadata_file(path, crate::safety::MetadataAccess::Append)
+		})
 	}
 
 	fn rewrite_with(&mut self, jobs: &[Job], reopen: impl FnOnce(&Path) -> std::io::Result<fs::File>) -> Result<()> {
@@ -204,11 +197,10 @@ fn journal_unavailable() -> Error {
 	std::io::Error::other("journal unavailable after a write failure; restart to recover").into()
 }
 
-fn quarantine_copy(path: &Path, destination: &Path) -> Result<()> {
-	let mut source = fs::File::open(path)?;
+fn quarantine_copy(contents: &[u8], destination: &Path) -> Result<()> {
 	let mut backup = fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
 	set_private_file(&backup)?;
-	std::io::copy(&mut source, &mut backup)?;
+	backup.write_all(contents)?;
 	backup.sync_all()?;
 	crate::fsx::sync_directory(destination.parent().unwrap_or(Path::new(".")))?;
 	Ok(())
@@ -236,8 +228,7 @@ fn is_unresolved(job: &Job) -> bool {
 }
 
 /// Remove the incomplete line at the end of the journal.
-fn truncate_torn(path: &Path) -> Result<()> {
-	let bytes = fs::read(path)?;
+fn truncate_torn(file: &fs::File, bytes: &[u8]) -> Result<()> {
 	let mut end = bytes.len();
 
 	while end > 0 && bytes[end - 1].is_ascii_whitespace() {
@@ -249,19 +240,12 @@ fn truncate_torn(path: &Path) -> Result<()> {
 		.rposition(|byte| *byte == b'\n')
 		.map_or(0, |newline| newline + 1);
 
-	let file = fs::OpenOptions::new().write(true).open(path)?;
 	file.set_len(start as u64)?;
 	file.sync_all()?;
 	Ok(())
 }
 
-fn replay(path: &Path) -> Result<Replay> {
-	let contents = match fs::read(path) {
-		Ok(contents) => contents,
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Replay::default()),
-		Err(error) => return Err(Error::Io(error)),
-	};
-
+fn replay(path: &Path, contents: &[u8]) -> Replay {
 	let lines: Vec<&[u8]> = contents
 		.split(|byte| *byte == b'\n')
 		.filter(|line| !line.iter().all(u8::is_ascii_whitespace))
@@ -292,7 +276,7 @@ fn replay(path: &Path) -> Result<Replay> {
 		}
 	}
 
-	Ok(replay)
+	replay
 }
 
 /// A line parses into a job, into a record from another version, or into
@@ -487,7 +471,7 @@ mod tests {
 		let compact = journal.compact(Duration::from_secs(7 * 24 * 60 * 60)).unwrap();
 
 		assert!(compact.kept.is_none());
-		assert_eq!(journal.lines().unwrap(), 2);
+		assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
 	}
 
 	#[test]
@@ -631,7 +615,7 @@ mod tests {
 		let backup = path.with_extension("corrupt");
 		fs::write(&backup, b"existing backup").unwrap();
 
-		assert!(quarantine_copy(&path, &backup).is_err());
+		assert!(quarantine_copy(&fs::read(&path).unwrap(), &backup).is_err());
 		assert_eq!(fs::read(&path).unwrap(), b"damaged journal");
 		assert_eq!(fs::read(&backup).unwrap(), b"existing backup");
 	}
@@ -700,7 +684,10 @@ mod tests {
 		assert_eq!(replay.jobs.len(), 1);
 		assert_eq!(replay.jobs[0].state, JobState::Done);
 		reopened.append(&initial).unwrap();
-		assert_eq!(super::replay(&path).unwrap().jobs[0].state, JobState::Pending);
+		assert_eq!(
+			super::replay(&path, &fs::read(&path).unwrap()).jobs[0].state,
+			JobState::Pending
+		);
 	}
 
 	#[test]

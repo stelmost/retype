@@ -324,14 +324,10 @@ impl Store {
 	pub fn lease(&self, id: &JobId) -> Result<JobLease> {
 		let state = self.root.parent().expect("state directory");
 		crate::fsx::create_dir_all_durable(state)?;
-		let mut options = fs::OpenOptions::new();
-		options.read(true).write(true).create(true);
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt;
-			options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-		}
-		let file = options.open(state.join(format!("undo-job.{}.lock", id.as_str())))?;
+		let file = crate::safety::open_metadata_file(
+			&state.join(format!("undo-job.{}.lock", id.as_str())),
+			crate::safety::MetadataAccess::Update,
+		)?;
 		#[cfg(unix)]
 		{
 			use std::os::fd::AsRawFd;
@@ -535,7 +531,7 @@ impl Store {
 	pub fn load(&self, id: &JobId) -> Result<Option<Record>> {
 		let path = self.directory(id).join("meta.toml");
 
-		let text = match fs::read_to_string(&path) {
+		let text = match crate::safety::read_metadata_text(&path) {
 			Ok(text) => text,
 			Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
 			Err(error) => return Err(Error::Io(error)),
@@ -1399,14 +1395,7 @@ pub(crate) fn store_lock(root: &Path) -> Result<StoreLock> {
 		.map_err(|_| Error::Io(std::io::Error::other("undo store lock poisoned")))?;
 	let state = root.parent().expect("state directory");
 	crate::fsx::create_dir_all_durable(state)?;
-	let mut options = fs::OpenOptions::new();
-	options.read(true).write(true).create(true);
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::OpenOptionsExt;
-		options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-	}
-	let file = options.open(state.join("undo.lock"))?;
+	let file = crate::safety::open_metadata_file(&state.join("undo.lock"), crate::safety::MetadataAccess::Update)?;
 	#[cfg(unix)]
 	{
 		use std::os::fd::AsRawFd;

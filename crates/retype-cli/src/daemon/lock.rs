@@ -16,11 +16,7 @@ pub struct Lock {
 
 impl Lock {
 	pub fn acquire(path: &Path, state_dir: &Path) -> Result<Self> {
-		let mut file = fs::OpenOptions::new()
-			.create(true)
-			.write(true)
-			.truncate(false)
-			.open(path)?;
+		let mut file = retype_core::safety::open_metadata_file(path, retype_core::safety::MetadataAccess::Update)?;
 
 		if !try_lock(&file)? {
 			return Err(Error::AlreadyRunning(state_dir.to_path_buf()));
