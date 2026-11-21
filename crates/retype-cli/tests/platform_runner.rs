@@ -85,6 +85,10 @@ fi
 echo 'mock tool'
 "#;
 
+const INSTALLER: &str = r#"#!/bin/sh
+[ "$MOCK_MODE" != installer-failure ] || { echo 'synthetic installer failure' >&2; exit 43; }
+"#;
+
 const TIMEOUT_SHIM: &str = r#"#!/bin/sh
 grace=${1#--kill-after=}
 grace=${grace%s}
@@ -216,6 +220,31 @@ impl Drop for ChildMarker {
 	}
 }
 
+fn stage_runner(root: &Path) {
+	let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	/* Run the real orchestration without invoking the product installer. */
+	for relative in [
+		"tests/run.sh",
+		"tests/support/run-bounded.pl",
+		"tests/nextest.toml",
+		"fixtures/native-watch/photo.heic",
+		"packaging/install.sh",
+		"packaging/linux/integrate.py",
+	] {
+		let destination = root.join(relative);
+		fs::create_dir_all(destination.parent().unwrap()).unwrap();
+		fs::copy(source.join(relative), &destination).unwrap();
+		let mut permissions = fs::metadata(&destination).unwrap().permissions();
+		permissions.set_readonly(true);
+		fs::set_permissions(destination, permissions).unwrap();
+	}
+	executable(&root.join("tests/install.sh"), INSTALLER);
+}
+
 fn run(host: &str, mode: &str, limit: u64) -> Run {
 	run_with_args(host, mode, limit, &[])
 }
@@ -232,7 +261,6 @@ fn run_with_args(host: &str, mode: &str, limit: u64, args: &[&str]) -> Run {
 	executable(&bin.join("cargo"), CARGO);
 	executable(&bin.join("git"), GIT);
 	executable(&bin.join("uname"), UNAME);
-	executable(&bin.join("getconf"), "#!/bin/sh\necho 'glibc 2.41'\n");
 	executable(
 		&bin.join("retype"),
 		"#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done\n",
@@ -266,15 +294,13 @@ fn run_with_args(host: &str, mode: &str, limit: u64, args: &[&str]) -> Run {
 		std::iter::once(bin.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
 	)
 	.unwrap();
-	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-		.parent()
-		.unwrap()
-		.parent()
-		.unwrap();
+	let root = dir.path().join("checkout");
+	stage_runner(&root);
 	let record = dir.path().join("cargo-invocations");
 	let child_pid = ChildMarker(dir.path().join("stubborn-child.pid"));
 	let mut command = Command::new(root.join("tests/run.sh"));
 	command
+		.current_dir(&root)
 		.args(args)
 		.env("PATH", path)
 		.env("MOCK_OS", host)
@@ -351,6 +377,14 @@ fn linux_runner_reports_a_failed_gate_and_runs_all_steps() {
 			.invocations
 			.contains("nextest run --workspace --locked --config-file tests/nextest.toml")
 	);
+}
+
+#[test]
+fn the_runner_rejects_a_failed_installer_even_when_workspace_tests_pass() {
+	let result = run("Linux", "installer-failure", 5);
+	assert_eq!(result.status.code(), Some(1), "{}", result.text);
+	assert!(result.summary.contains("installer: command exit 43"), "{}", result.summary);
+	assert!(result.summary.contains("workspace: command exit 0"), "{}", result.summary);
 }
 
 #[test]
