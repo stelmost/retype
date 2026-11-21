@@ -114,6 +114,31 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn a_lock_cannot_truncate_a_hard_link_to_user_data() {
+		let directory = tempfile::tempdir().unwrap();
+		let original = directory.path().join("document.txt");
+		let lock = directory.path().join("lock");
+		let bytes = b"unrelated private document\n";
+		fs::write(&original, bytes).unwrap();
+		fs::hard_link(&original, &lock).unwrap();
+		assert!(Lock::acquire(&lock, directory.path()).is_err());
+		assert_eq!(fs::read(original).unwrap(), bytes);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_lock_cannot_truncate_a_symlink_to_user_data() {
+		let directory = tempfile::tempdir().unwrap();
+		let original = directory.path().join("document.txt");
+		let lock = directory.path().join("lock");
+		let bytes = b"unrelated private document\n";
+		fs::write(&original, bytes).unwrap();
+		std::os::unix::fs::symlink(&original, &lock).unwrap();
+		assert!(Lock::acquire(&lock, directory.path()).is_err());
+		assert_eq!(fs::read(original).unwrap(), bytes);
+	}
+
+	#[test]
 	fn a_held_lock_refuses_a_second_daemon() {
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("lock");
