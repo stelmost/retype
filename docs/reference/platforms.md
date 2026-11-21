@@ -6,12 +6,14 @@ Supported targets, delivery tiers and their consequences.
 
 | Platform | Minimum | Architectures | Status |
 |---|---|---|---|
-| Linux | Current Debian stable: Debian 13 (trixie), glibc 2.41 | x86_64, aarch64 | Supported baseline; qualify each shipped architecture |
+| Linux | Current Debian stable: Debian 13 (trixie), glibc 2.41 | x86_64, aarch64 | Initial release: amd64 (x86_64) supported; ARM64 (aarch64) best effort |
 | macOS | 13 Ventura | x86_64, aarch64 | Supported |
 | Windows | 10 21H2 | x86_64, aarch64 | Supported |
 | BSD | FreeBSD 13, OpenBSD 7 | x86_64 | Later, CLI only, no support commitment |
 | WSL 2 | Current | x86_64 | Best effort, unsupported |
 | Android, iOS | | | Out of scope |
+
+The initial Linux release targets amd64. ARM64 support is best effort, based on the completed native Debian 13 container checks: strict workspace and daemon interruption tests, architecture-specific converter fidelity, and exact installed-archive validation. [Qualification run 44814840504](https://github.com/lapilliworks/retype/actions/runs/44814840504) passed these checks on both architectures. ARM64 desktop and full Debian kernel/device qualification are not initial-release gates. Physical power-loss qualification is [deferred](../dev/testing.md#initial-linux-release-scope).
 
 Reasoning, not preference:
 

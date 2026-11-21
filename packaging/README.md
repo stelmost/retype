@@ -32,7 +32,7 @@ Debian qualification can run independently of Windows/macOS failures and support
 
 Current Debian stable is the Linux support baseline, currently Debian 13 (trixie), with glibc 2.41. The older Debian 11/glibc 2.31 target is retired. Other distributions may run the binary but do not carry a support commitment. Builds and converter evidence must be checked in the stable userspace.
 
-The release workflow builds every supported target from `docs/reference/platforms.md`:
+The release workflow builds the targets below. Support status and the amd64-first Linux release scope are defined in [Platforms](../docs/reference/platforms.md#1-support-matrix); building an ARM64 archive does not upgrade its best-effort support status.
 
 | Platform | Target | Build host |
 |---|---|---|

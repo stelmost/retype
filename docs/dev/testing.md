@@ -27,6 +27,12 @@ Each native workflow also earns `png:jpg` and `png:webp` fidelity evidence with 
 
 Hosted Windows Server runs as administrator with UAC disabled. Hosted macOS is not a user's interactive session. These jobs do not test physical power loss, real storage exhaustion, all advertised architectures, network or cloud filesystems, or client-session behavior. Use the separate disposable-VM and native-host tests where those properties matter.
 
+## Initial Linux release scope
+
+Architecture support follows [Platforms](../reference/platforms.md#1-support-matrix): amd64 first, with best-effort ARM64 support limited to the completed native userspace and installed-package checks. Installer reboot/login qualification remains required for the initial amd64 release.
+
+Physical host/controller/device power-loss qualification is deferred and is not an initial-release gate. Existing process-interruption and actual guest power-cut evidence remains valid within its recorded scope; it does not establish physical storage flush compliance or a physical power-loss guarantee. No recovery assertion or data-preservation requirement is relaxed by this deferral.
+
 ## 1. Baseline tests
 
 ```sh
