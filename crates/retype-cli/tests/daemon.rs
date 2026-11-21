@@ -2,10 +2,11 @@
 
 #![cfg(unix)]
 
-use std::io::BufReader;
+use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use retype_cli::daemon::{Server, serve};
 use retype_core::error::Code;
@@ -96,6 +97,35 @@ fn greeted(id: u64, method: &str) -> Request {
 			.unwrap(),
 		_ => Request::new(id, method),
 	}
+}
+
+#[test]
+fn an_unfinished_frame_cannot_block_status_or_shutdown() {
+	let daemon = Daemon::start();
+	let mut stalled = UnixStream::connect(&daemon.socket).unwrap();
+	stalled.write_all(b"{").unwrap();
+	let mut client = daemon.connect();
+	client.stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+	assert!(client.hello().ok);
+	assert!(client.call(&greeted(2, "status")).ok);
+	assert!(client.call(&greeted(3, "shutdown")).ok);
+	let deadline = Instant::now() + Duration::from_secs(1);
+	while !daemon.handle.as_ref().unwrap().is_finished() {
+		assert!(Instant::now() < deadline, "the open peer pinned shutdown");
+		std::thread::sleep(Duration::from_millis(20));
+	}
+}
+
+#[test]
+fn a_frame_deadline_closes_an_incomplete_request() {
+	let daemon = Daemon::start();
+	let mut stalled = daemon.connect();
+	stalled.stream.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+	stalled.stream.write_all(b"{").unwrap();
+	let error = read_frame(&mut stalled.reader).unwrap().unwrap();
+	assert_eq!(error["error"]["code"], "E_IPC_FRAME");
+	assert!(error["error"]["message"].as_str().unwrap().contains("deadline"));
+	assert!(read_frame(&mut stalled.reader).unwrap().is_none());
 }
 
 #[test]

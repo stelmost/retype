@@ -22,6 +22,16 @@ use crate::error::Result;
 #[cfg(test)]
 #[path = "server_tests.rs"]
 mod tests;
+#[cfg(unix)]
+#[path = "unix_connections.rs"]
+mod unix_connections;
+#[cfg(unix)]
+pub use unix_connections::serve;
+
+enum ConnectionRequest<'a> {
+	Greeting(u64),
+	Command(&'a Request),
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DaemonLifecycle {
@@ -226,18 +236,39 @@ impl Server {
 		writer: &mut impl Write,
 		first: Option<serde_json::Value>,
 	) -> Result<()> {
+		Self::serve_frames(
+			|| read_frame(reader),
+			|response| write_response(writer, response),
+			first,
+			|request| self.reply(request),
+		)
+	}
+
+	fn reply(&mut self, request: ConnectionRequest<'_>) -> Result<Response> {
+		match request {
+			ConnectionRequest::Greeting(id) => Ok(Response::ok(id, self.hello())?),
+			ConnectionRequest::Command(request) => self.answer(request),
+		}
+	}
+
+	fn serve_frames(
+		mut read: impl FnMut() -> std::result::Result<Option<serde_json::Value>, retype_ipc::FrameError>,
+		mut write: impl FnMut(&Response) -> std::result::Result<(), retype_ipc::FrameError>,
+		first: Option<serde_json::Value>,
+		mut reply: impl FnMut(ConnectionRequest<'_>) -> Result<Response>,
+	) -> Result<()> {
 		let mut greeted = false;
 		let mut pending = first;
 
 		loop {
 			let frame = match pending.take() {
 				Some(frame) => frame,
-				None => match read_frame(reader) {
+				None => match read() {
 					Ok(Some(frame)) => frame,
 					Ok(None) => return Ok(()),
 					Err(error) => {
 						let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
-						let _ = write_response(writer, &response);
+						let _ = write(&response);
 						return Ok(());
 					}
 				},
@@ -247,7 +278,7 @@ impl Server {
 				Ok(request) => request,
 				Err(error) => {
 					let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
-					write_response(writer, &response)?;
+					write(&response)?;
 					return Ok(());
 				}
 			};
@@ -258,7 +289,7 @@ impl Server {
 						request.id,
 						WireError::new(Code::IpcHandshake, "send hello before any other method"),
 					);
-					write_response(writer, &response)?;
+					write(&response)?;
 					return Ok(());
 				}
 
@@ -267,7 +298,7 @@ impl Server {
 					Err(error) => {
 						let response =
 							Response::error(request.id, WireError::new(Code::IpcHandshake, error.to_string()));
-						write_response(writer, &response)?;
+						write(&response)?;
 						return Ok(());
 					}
 				};
@@ -280,19 +311,19 @@ impl Server {
 							format!("this daemon speaks {IPC_VERSION}, the client speaks {}", hello.ipc),
 						),
 					);
-					write_response(writer, &response)?;
+					write(&response)?;
 					return Ok(());
 				}
 
+				let response = reply(ConnectionRequest::Greeting(request.id))?;
+				write(&response)?;
 				greeted = true;
-				let response = Response::ok(request.id, self.hello())?;
-				write_response(writer, &response)?;
 				continue;
 			}
 
-			let response = self.answer(&request)?;
+			let response = reply(ConnectionRequest::Command(&request))?;
 			let stopping = request.method == "shutdown";
-			write_response(writer, &response)?;
+			write(&response)?;
 
 			if stopping {
 				return Ok(());
@@ -1654,69 +1685,4 @@ pub(crate) fn connection_result(result: Result<()>) -> Result<()> {
 		}
 		other => other,
 	}
-}
-
-/// Accept connections until the daemon is asked to stop.
-#[cfg(unix)]
-pub fn serve(listener: std::os::unix::net::UnixListener, server: &mut Server) -> Result<()> {
-	use std::io::BufReader;
-
-	// Polled rather than blocked, so a signal can be noticed while nothing is
-	// connecting. Fifty milliseconds of latency on a stop is not a stop that waits.
-	listener.set_nonblocking(true)?;
-
-	let mut signals = crate::daemon::signals::Seen::now();
-
-	loop {
-		let mut stream = match listener.accept() {
-			Ok((stream, _)) => stream,
-			Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-				let (asked, seen) = signals.asked();
-				signals = seen;
-
-				match asked {
-					crate::daemon::signals::Asked::Nothing => {}
-					crate::daemon::signals::Asked::Drain => {
-						server.stop(false);
-						eprintln!("retype: stopping after the running jobs finish; a second signal cancels them");
-					}
-					crate::daemon::signals::Asked::Now => {
-						// The waiting is done in `signals::drain`, which is where the
-						// escalation is decided; here the queue is emptied and the loop
-						// ends.
-						server.stop(true);
-					}
-				}
-
-				if server.stopped() {
-					break;
-				}
-
-				std::thread::sleep(crate::daemon::signals::POLL);
-				continue;
-			}
-			Err(error) => return Err(error.into()),
-		};
-
-		stream.set_nonblocking(false)?;
-
-		// The state directory's modes are the boundary; this is the second lock, for
-		// the day a backup or a stray `chmod` moved them, `docs/dev/architecture/ipc.md` §4.
-		let peer = crate::daemon::peer::peer_uid(&stream);
-
-		if !crate::daemon::peer::accepts(peer, crate::daemon::peer::our_uid()) {
-			eprintln!("retype: refused a connection from uid {}", peer.unwrap_or_default());
-			continue;
-		}
-
-		let mut reader = BufReader::new(stream.try_clone()?);
-
-		connection_result(server.serve_connection(&mut reader, &mut stream))?;
-
-		if server.stopped() {
-			break;
-		}
-	}
-
-	Ok(())
 }
