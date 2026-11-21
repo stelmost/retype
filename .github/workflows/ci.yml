@@ -81,6 +81,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin
       - run: bash -n packaging/install.sh
       - run: bash tests/install.sh
+      - run: python3 tests/test_installed.py
       - run: timeout --kill-after=5s 30s bash tests/release.sh
       - name: Parse PowerShell scripts
         shell: pwsh
@@ -88,7 +89,8 @@ jobs:
           foreach ($path in @('packaging/install.ps1', 'tests/run.ps1',
               'tests/prepare.ps1', 'tests/hyperv-info.ps1',
               'tests/hyperv-check.ps1', 'tests/windows-storage-faults.ps1', 'tests/install.ps1',
-              'crates/retype-cli/tests/support/windows_runner_probe.ps1')) {
+              'crates/retype-cli/tests/support/windows_runner_probe.ps1',
+              'tests/support/windows-user.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(

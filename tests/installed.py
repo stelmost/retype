@@ -20,6 +20,21 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def installed_fidelity_matches_builds(outputs):
+    if not outputs:
+        return False
+    for output in outputs:
+        evidence = output['fidelity']
+        claim = evidence.get('claim')
+        if not claim:
+            return False
+        builds_match = all(evidence[field] == claim.get(field, '') for field in
+                           ('version', 'fingerprint', 'engine_version', 'engine_fingerprint'))
+        if evidence['state'] != ('earned' if builds_match else 'unverified'):
+            return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', type=Path)
@@ -133,7 +148,7 @@ def main():
             shutil.copy2(repo / 'fixtures/fidelity/alpha.png', png)
             expected = sha(png)
             job = cli('multi-output', 'convert', png, 'jpg,webp+keep', '--no-spawn')['job']
-            check('installed fidelity lookup', all(output['fidelity']['state'] == 'earned' for output in job['outputs']))
+            check('installed fidelity lookup', installed_fidelity_matches_builds(job['outputs']))
             undo('multi-output-undo', job)
             check('kept source and outputs after undo', sha(png) == expected and all(not Path(output['path']).exists() for output in job['outputs']))
             document = work / 'document.md'
