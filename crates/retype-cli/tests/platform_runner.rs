@@ -383,8 +383,16 @@ fn linux_runner_reports_a_failed_gate_and_runs_all_steps() {
 fn the_runner_rejects_a_failed_installer_even_when_workspace_tests_pass() {
 	let result = run("Linux", "installer-failure", 5);
 	assert_eq!(result.status.code(), Some(1), "{}", result.text);
-	assert!(result.summary.contains("installer: command exit 43"), "{}", result.summary);
-	assert!(result.summary.contains("workspace: command exit 0"), "{}", result.summary);
+	assert!(
+		result.summary.contains("installer: command exit 43"),
+		"{}",
+		result.summary
+	);
+	assert!(
+		result.summary.contains("workspace: command exit 0"),
+		"{}",
+		result.summary
+	);
 }
 
 #[test]
