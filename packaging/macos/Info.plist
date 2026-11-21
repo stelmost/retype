@@ -9,7 +9,13 @@
 	<key>CFBundleDisplayName</key>
 	<string>retype</string>
 	<key>CFBundleExecutable</key>
-	<string>retype</string>
+	<string>retype-notifier</string>
+	<key>CFBundleVersion</key>
+	<string>0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>LSBackgroundOnly</key>
@@ -19,6 +25,8 @@
 		<dict>
 			<key>CFBundleURLName</key>
 			<string>com.lapilliworks.retype.cli</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>retype</string>

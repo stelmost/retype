@@ -12,15 +12,15 @@
 //! |---|---|---|
 //! | Actions | `notify-send --wait --action` | Linux with a session bus and a libnotify build that has actions |
 //! | Plain | `notify-send` | Linux with a session bus |
-//! | Plain | `osascript` | macOS |
+//! | Plain | the installed `retype.app` notifier, or `osascript` in source builds | macOS |
 //! | Plain | a toast through `powershell.exe` | Windows |
 //! | Log | a line on the daemon's stderr | anywhere the platform has no notifier |
 //!
 //! The Windows toast has no button, and does not need a signed bundle: it needs an
 //! AppUserModelID the shell can resolve, which the script registers under
 //! `HKCU\Software\Classes\AppUserModelId` before the first toast. Protocol activation
-//! through a Start-menu shortcut, and the macOS User Notifications centre with its
-//! categories, still need the signed notifier bundle, which is not built yet.
+//! through a Start-menu shortcut still needs the signed notifier bundle, which is
+//! not built yet. The macOS app supplies its own identity and URI handling, with no buttons.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -280,7 +280,9 @@ impl Channel {
 		#[cfg(target_os = "macos")]
 		{
 			let _ = actions;
-			if has_command("osascript") {
+			if std::env::current_exe().ok().and_then(|path| macos_notifier(&path)).is_some()
+				|| has_command("osascript")
+			{
 				Self::Plain
 			} else {
 				Self::Log
@@ -346,6 +348,16 @@ impl Channel {
 fn plain(message: &Message) -> Option<String> {
 	#[cfg(target_os = "macos")]
 	{
+		if let Some(helper) = std::env::current_exe().ok().and_then(|path| macos_notifier(&path)) {
+			return match send_macos(&helper, message, std::time::Duration::from_secs(30)) {
+				Ok(()) => Some(String::new()),
+				Err(error) => {
+					eprintln!("retype: native notification failed: {error}; {}", message.body);
+					None
+				}
+			};
+		}
+
 		let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
 		let script = format!(
 			"display notification {} with title {}",
@@ -372,6 +384,52 @@ fn plain(message: &Message) -> Option<String> {
 	{
 		notify_send(message, false)
 	}
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_notifier(executable: &Path) -> Option<std::path::PathBuf> {
+	let parent = executable.parent()?;
+	let prefix = parent.parent()?;
+	let candidate = if parent.file_name().is_some_and(|name| name == "Resources")
+		&& prefix.file_name().is_some_and(|name| name == "Contents")
+	{
+		prefix.join("MacOS/retype-notifier")
+	} else {
+		prefix.join("share/retype/macos/retype.app/Contents/MacOS/retype-notifier")
+	};
+	candidate.is_file().then_some(candidate)
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn send_macos(helper: &Path, message: &Message, timeout: std::time::Duration) -> std::io::Result<()> {
+	use std::io::{Error, ErrorKind};
+	use std::time::{Duration, Instant};
+
+	let mut child = Command::new(helper)
+		.args(["notify", &message.title, &message.body])
+		.stdin(Stdio::null())
+		.stdout(Stdio::null())
+		.stderr(Stdio::inherit())
+		.spawn()?;
+	let deadline = Instant::now() + timeout;
+	let result = loop {
+		match child.try_wait() {
+			Ok(Some(status)) if status.success() => break Ok(()),
+			Ok(Some(status)) => break Err(Error::other(format!("native notifier exited {status}"))),
+			Err(error) => break Err(error),
+			Ok(None) => {}
+		}
+		if Instant::now() >= deadline {
+			break Err(Error::new(ErrorKind::TimedOut, "native notifier timed out"));
+		}
+		std::thread::sleep(Duration::from_millis(10));
+	};
+	if result.is_err() {
+		/* Only the notification helper is killed; it never runs conversion or undo. */
+		let _ = child.kill();
+		let _ = child.wait();
+	}
+	result
 }
 
 /// Run `notify-send`, answering with the action the user chose, if any.
@@ -731,6 +789,65 @@ mod tests {
 	#[test]
 	fn a_batch_with_nothing_to_say_says_nothing() {
 		assert!(Message::of(&[], true).is_none());
+	}
+
+	#[test]
+	fn the_macos_notifier_is_resolved_from_the_exact_installation() {
+		let directory = tempfile::tempdir().unwrap();
+		let app = directory.path().join("share/retype/macos/retype.app/Contents");
+		let helper = app.join("MacOS/retype-notifier");
+		std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
+		std::fs::write(&helper, b"fixture").unwrap();
+		assert_eq!(macos_notifier(&directory.path().join("bin/retype")), Some(helper.clone()));
+		assert_eq!(macos_notifier(&app.join("Resources/retype")), Some(helper));
+		assert!(macos_notifier(&directory.path().join("target/debug/retype")).is_none());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn the_native_notifier_receives_literal_arguments_and_reports_failure() {
+		use std::os::unix::fs::PermissionsExt;
+		use std::time::Duration;
+
+		let directory = tempfile::tempdir().unwrap();
+		let helper = directory.path().join("notifier with spaces");
+		let record = directory.path().join("arguments");
+		std::fs::write(
+			&helper,
+			format!("#!/bin/sh\nprintf '%s\\0' \"$@\" > '{}'\n", record.display()),
+		)
+		.unwrap();
+		std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+		let message = Message {
+			title: "retype \"title\"".to_string(),
+			body: "a&b; $HOME `echo no`\nnew line".to_string(),
+			undo: Vec::new(),
+		};
+		send_macos(&helper, &message, Duration::from_secs(2)).unwrap();
+		assert_eq!(
+			std::fs::read(&record).unwrap(),
+			format!("notify\0{}\0{}\0", message.title, message.body).as_bytes()
+		);
+		std::fs::write(&helper, "#!/bin/sh\nexit 7\n").unwrap();
+		let error = send_macos(&helper, &message, Duration::from_secs(2)).unwrap_err();
+		assert!(error.to_string().contains('7'), "{error}");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_native_notifier_timeout_is_bounded_and_reaped() {
+		use std::os::unix::fs::PermissionsExt;
+		use std::time::{Duration, Instant};
+
+		let directory = tempfile::tempdir().unwrap();
+		let helper = directory.path().join("notifier");
+		std::fs::write(&helper, "#!/bin/sh\nexec sleep 60\n").unwrap();
+		std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+		let message = Message { title: "retype".to_string(), body: "fixture".to_string(), undo: Vec::new() };
+		let start = Instant::now();
+		let error = send_macos(&helper, &message, Duration::from_millis(50)).unwrap_err();
+		assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+		assert!(start.elapsed() < Duration::from_secs(2));
 	}
 
 	#[test]
