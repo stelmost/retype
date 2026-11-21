@@ -18,7 +18,11 @@ trap cleanup EXIT
 
 case $(uname -s) in
 Linux) os=unknown-linux-gnu ;;
-Darwin) os=apple-darwin ;;
+Darwin)
+	python3 "$root/tests/macos-install.py" \
+		--report "${RETYPE_TEST_REPORT_DIR:-$root/target/test-reports}/macos-$(basename "$tmp")"
+	exit
+	;;
 *)
 	echo "skipping installer test: unsupported host $(uname -s)" >&2
 	exit 0
@@ -124,6 +128,7 @@ common=(
 	RETYPE_RELEASE_BASE="file://$tmp/releases"
 	RETYPE_PREFIX="$prefix"
 	RETYPE_TARGET="$target"
+	RETYPE_INSTALL_MODE=preview
 	XDG_CONFIG_HOME="$tmp/config"
 	XDG_DATA_HOME="$tmp/data"
 	XDG_STATE_HOME="$tmp/state"

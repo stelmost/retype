@@ -23,15 +23,15 @@ for archive in *.tar.gz; do
 	printf '%s: OK\n' "$archive"
 done
 
-for file in install.sh install.ps1 install.sh.sha256 install.ps1.sha256 SHA256SUMS; do
+for file in install.sh install.ps1 install.sh.sha256 install.ps1.sha256 SHA256SUMS SHA256SUMS.minisig; do
 	if [ -e "$file" ] || [ -L "$file" ]; then
 		printf 'Refusing to overwrite release asset: %s\n' "$file" >&2
 		exit 1
 	fi
 done
 
-cp "$root/packaging/install.sh" install.sh
-cp "$root/packaging/install.ps1" install.ps1
+python3 "$root/scripts/embed-trust.py" "$root/packaging/install.sh" install.sh
+python3 "$root/scripts/embed-trust.py" "$root/packaging/install.ps1" install.ps1
 sha256sum -- *.tar.gz install.sh install.ps1 > SHA256SUMS
 sha256sum -- install.sh > install.sh.sha256
 sha256sum -- install.ps1 > install.ps1.sha256

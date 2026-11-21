@@ -28,133 +28,12 @@ jobs:
           }
 
   debian:
-    name: Debian stable build and installed verification
+    name: Debian 13 preview build and installed verification
     uses: ./.github/workflows/debian.yml
 
   native:
-    name: native verification
+    name: native preview verification
     uses: ./.github/workflows/native.yml
-
-  build:
-    name: build (${{ matrix.target }})
-    needs: [native]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-            evidence: macos-arm64
-            build: cargo
-            binary: retype
-          - runner: macos-15
-            target: aarch64-apple-darwin
-            evidence: macos-arm64
-            build: cargo
-            binary: retype
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            evidence: windows-x86_64
-            build: cargo
-            binary: retype.exe
-          - runner: windows-latest
-            target: aarch64-pc-windows-msvc
-            evidence: windows-x86_64
-            build: cargo
-            binary: retype.exe
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download earned fidelity evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: native-${{ matrix.evidence }}
-          path: target/native-evidence
-
-      - name: Version
-        id: version
-        shell: bash
-        run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            version=$GITHUB_REF_NAME
-            release=true
-          else
-            version=v0.1.0-dev-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)
-            release=false
-          fi
-          printf 'version=%s\nrelease=%s\n' "$version" "$release" >> "$GITHUB_OUTPUT"
-
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.build == 'cargo'
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        if: matrix.build == 'cargo'
-
-      - name: Build
-        if: matrix.build == 'cargo'
-        shell: bash
-        run: |
-          set -euo pipefail
-          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          cargo build --release --locked -p retype-cli --bin retype --target "${{ matrix.target }}"
-          if [ "${{ matrix.target }}" != 'aarch64-pc-windows-msvc' ]; then
-            "$binary" --version
-          fi
-
-      - name: Assemble
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          name="retype-$VERSION-${{ matrix.target }}"
-          mkdir -p "dist/$name/bin" "dist/$name/share/retype"
-          if [ "${{ matrix.build }}" = 'container' ]; then
-            cp target/dist/retype "dist/$name/bin/retype"
-          else
-            cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/$name/bin/${{ matrix.binary }}"
-          fi
-          # Evidence names the tested tool builds; a different installed build reports unverified.
-          test -s target/native-evidence/fidelity.toml
-          cp target/native-evidence/fidelity.toml "dist/$name/share/retype/fidelity.toml"
-          if [ -d fixtures/fidelity ]; then
-            mkdir -p "dist/$name/share/retype/fixtures/fidelity"
-            cp -R fixtures/fidelity/. "dist/$name/share/retype/fixtures/fidelity/"
-          fi
-          cp -R packaging "dist/$name/share/retype/packaging"
-          cp README.md LICENSE "dist/$name/"
-          tar -czf "dist/$name.tar.gz" -C dist "$name"
-
-      - name: Checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd dist
-          for file in *.tar.gz; do
-            sha256sum "$file" > "$file.sha256"
-          done
-
-      - name: Attest build provenance
-        if: steps.version.outputs.release == 'true'
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*.tar.gz
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: retype-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-          if-no-files-found: error
 
   checks:
     name: checks
@@ -177,6 +56,8 @@ jobs:
       - run: bash -n packaging/install.sh
       - run: bash tests/install.sh
       - run: python3 tests/test_installed.py
+      - run: python3 scripts/embed-trust.py --check packaging/install.sh
+      - run: python3 scripts/embed-trust.py --check packaging/install.ps1
       - run: timeout --kill-after=5s 30s bash tests/release.sh
       - run: test -s packaging/install.ps1
       - name: Parse PowerShell installer
@@ -188,8 +69,8 @@ jobs:
           if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
 
   package:
-    name: assemble release assets
-    needs: [build, debian]
+    name: assemble ${{ github.event_name == 'workflow_dispatch' && 'unsigned preview' || 'signed release' }} assets
+    needs: [native, debian]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -200,19 +81,39 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: retype-*
+          pattern: ${{ github.event_name == 'workflow_dispatch' && 'retype-preview-*' || 'retype-signed-*' }}
           path: dist
           merge-multiple: true
-      - name: Verify and assemble release assets
+      - name: Require every signed and qualified primary archive
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
+            archive="dist/retype-$GITHUB_REF_NAME-$target.tar.gz"
+            test -s "$archive" || { echo "Missing signed/qualified archive: $archive" >&2; exit 1; }
+          done
+      - name: Verify archives and generate canonical installer closure
         run: bash scripts/assemble-release.sh dist
-      - name: Attest qualified Debian archives
+      - name: Sign and verify the final publisher manifest
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/sign-release.sh dist \
+            "${RETYPE_SIGNING_KEY_FILE:?An approved existing key path is required}" \
+            "${RETYPE_PUBLISHER_KEY:?An independently approved publisher key is required}"
+          for asset in dist/*.tar.gz dist/install.sh dist/install.ps1; do
+            bash packaging/trust/verify.sh "$asset" dist/SHA256SUMS dist/SHA256SUMS.minisig "$RETYPE_PUBLISHER_KEY"
+          done
+      - name: Attest signed and qualified native archives
         if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/*-unknown-linux-gnu.tar.gz
+          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: release-assets
+          name: ${{ github.event_name == 'workflow_dispatch' && 'unsigned-preview-assets' || 'release-assets' }}
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
@@ -221,10 +122,11 @@ jobs:
             dist/install.sh.sha256
             dist/install.ps1.sha256
             dist/SHA256SUMS
+            dist/SHA256SUMS.minisig
           if-no-files-found: error
 
   publish:
-    name: publish release
+    name: publish signed release
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: [verify, package, checks, native, debian]
     runs-on: ubuntu-latest
@@ -232,12 +134,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: release-assets
           path: dist
-      - name: Verify release assets
-        run: cd dist && sha256sum --check SHA256SUMS
+      - name: Verify publisher-authenticated release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in dist/*.tar.gz dist/install.sh dist/install.ps1; do
+            bash packaging/trust/verify.sh "$asset" dist/SHA256SUMS dist/SHA256SUMS.minisig \
+              "${RETYPE_PUBLISHER_KEY:?An independently approved publisher key is required}"
+          done
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -247,7 +158,7 @@ jobs:
           prerelease=''
           case "$TAG" in *-*) prerelease='--prerelease' ;; esac
           assets=(dist/*.tar.gz dist/*.tar.gz.sha256 dist/install.sh dist/install.ps1
-            dist/install.sh.sha256 dist/install.ps1.sha256 dist/SHA256SUMS)
+            dist/install.sh.sha256 dist/install.ps1.sha256 dist/SHA256SUMS dist/SHA256SUMS.minisig)
           if gh release view "$TAG" >/dev/null 2>&1; then
             # A retry must not replace an existing published asset.
             gh release upload "$TAG" "${assets[@]}"

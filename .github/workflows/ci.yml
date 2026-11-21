@@ -51,6 +51,7 @@ jobs:
   cross:
     name: cross check (typecheck foreign targets)
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.target != 'x86_64-pc-windows-msvc' && matrix.target != 'aarch64-apple-darwin' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -79,9 +80,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin
-      - run: bash -n packaging/install.sh
+      - name: Parse Unix packaging and signing scripts
+        run: |
+          for file in packaging/install.sh packaging/trust/*.sh scripts/sign-release.sh scripts/sign-macos.sh; do
+            bash -n "$file" || exit
+          done
       - run: bash tests/install.sh
       - run: python3 tests/test_installed.py
+      - run: python3 scripts/embed-trust.py --check packaging/install.sh
+      - run: python3 scripts/embed-trust.py --check packaging/install.ps1
       - run: timeout --kill-after=5s 30s bash tests/release.sh
       - name: Parse PowerShell scripts
         shell: pwsh
@@ -90,7 +97,9 @@ jobs:
               'tests/prepare.ps1', 'tests/hyperv-info.ps1',
               'tests/hyperv-check.ps1', 'tests/windows-storage-faults.ps1', 'tests/install.ps1',
               'crates/retype-cli/tests/support/windows_runner_probe.ps1',
-              'tests/support/windows-user.ps1')) {
+              'tests/support/windows-user.ps1', 'packaging/windows/shortcut.ps1',
+              'packaging/trust/verify.ps1', 'packaging/trust/verify-windows.ps1',
+              'scripts/sign-windows.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(

@@ -9,8 +9,9 @@ permissions:
 
 jobs:
   qualify:
-    name: Debian stable (${{ matrix.target }})
+    name: Debian 13 ${{ matrix.target }} (${{ matrix.required && 'required' || 'best effort' }})
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ !matrix.required }}
     container: debian:trixie
     timeout-minutes: 60
     strategy:
@@ -21,10 +22,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             typst_target: x86_64-unknown-linux-musl
             evidence: linux-x86_64
+            required: true
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             typst_target: aarch64-unknown-linux-musl
             evidence: linux-arm64
+            required: false
     steps:
       - name: Prepare stable build tools
         shell: bash
@@ -97,7 +100,7 @@ jobs:
           tar -czf "dist/$name.tar.gz" -C dist "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
           setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
-            python3 tests/installed.py "dist/$name.tar.gz" --report "$RETYPE_TEST_REPORT_DIR/installed"
+            python3 tests/installed.py "dist/$name.tar.gz" --preview --report "$RETYPE_TEST_REPORT_DIR/installed"
           readelf --version-info target/release/retype > "$RETYPE_TEST_REPORT_DIR/symbols.log"
       - name: Upload qualification evidence
         if: always()
@@ -108,7 +111,7 @@ jobs:
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: retype-${{ matrix.target }}
+          name: retype-preview-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
