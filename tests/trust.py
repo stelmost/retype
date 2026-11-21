@@ -19,7 +19,8 @@ DATA = b'Synthetic bytes, not an archive or executable.\n'
 DIGEST = hashlib.sha256(DATA).hexdigest()
 SOURCES = ['packaging/trust/verify.sh', 'packaging/trust/verify.ps1',
 	'packaging/trust/verify-windows.ps1', 'packaging/trust/verify-macos.sh',
-	'scripts/embed-trust.py', 'tests/trust.py']
+	'scripts/embed-trust.py', 'tests/trust.py', 'scripts/sign-release.sh', 'scripts/sign-macos.sh',
+	'scripts/sign-windows.ps1', 'tests/trust.ps1', 'packaging/trust/README.md']
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--report', required=True, type=Path, help='Fresh persistent report directory, outside Cargo target')
@@ -61,9 +62,19 @@ def manifest_tests():
 	bin_dir = REPORT / 'minisign-double'
 	bin_dir.mkdir()
 	tool(bin_dir, 'minisign', f'''
-[[ $# -eq 7 && $1 == -V && $2 == -P && $3 == '{NON_KEY}' && $4 == -m && $6 == -x ]]
-[[ $(<"$7") == SYNTHETIC-NOT-A-SIGNATURE ]]
-[[ ${{RETYPE_TEST_REJECT:-0}} != 1 ]]
+[[ $# -eq 7 && $4 == -m && $6 == -x ]]
+case $1 in
+-V)
+	[[ $2 == -P && $3 == '{NON_KEY}' && $(<"$7") == SYNTHETIC-NOT-A-SIGNATURE ]]
+	[[ ${{RETYPE_TEST_REJECT:-0}} != 1 ]]
+	if [[ -n ${{RETYPE_TEST_OCCUPY_SIGNATURE:-}} && ! -e $RETYPE_TEST_OCCUPY_SIGNATURE ]]; then
+		mkdir "$RETYPE_TEST_OCCUPY_SIGNATURE"
+	fi ;;
+-S)
+	[[ $2 == -s && -f $3 && ${{RETYPE_TEST_SIGN_REJECT:-0}} != 1 ]]
+	printf 'SYNTHETIC-NOT-A-SIGNATURE\\n' > "$7" ;;
+*) exit 64 ;;
+esac
 ''')
 	environment = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']}
 	cases = {
@@ -107,6 +118,47 @@ def manifest_tests():
 				NAME.replace('-', r'\055', 1)], False, environment)
 
 
+def manifest_signing_tests():
+	environment = {'PATH': str(REPORT / 'minisign-double') + os.pathsep + os.environ['PATH']}
+	key = REPORT / 'not-a-private-key'
+	key.write_text('Invalid non-key bytes for the synthetic signer double only.\n')
+
+	def fixture(label):
+		directory = REPORT / label
+		directory.mkdir()
+		files = {NAME: DATA, 'install.sh': b'Unix installer fixture', 'install.ps1': b'Windows installer fixture'}
+		for name, data in files.items():
+			(directory / name).write_bytes(data)
+		(directory / 'SHA256SUMS').write_text(''.join(
+			f'{hashlib.sha256(data).hexdigest()}  {name}\n' for name, data in files.items()))
+		return directory
+
+	def command(directory):
+		return [BASH, ROOT / 'scripts/sign-release.sh', directory, key, NON_KEY]
+
+	directory = fixture('sign-manifest-positive')
+	before = {path.name: path.read_bytes() for path in directory.iterdir()}
+	check('sign-manifest-adapter-positive', command(directory), True, environment)
+	assert all((directory / name).read_bytes() == data for name, data in before.items())
+	assert (directory / 'SHA256SUMS.minisig').read_text().strip() == 'SYNTHETIC-NOT-A-SIGNATURE'
+	check('sign-manifest-no-replacement', command(directory), False, environment)
+	directory = fixture('sign-manifest-missing-key')
+	check('sign-manifest-missing-key', command(directory)[:3] + [REPORT / 'absent-key', NON_KEY], False, environment)
+	check('sign-manifest-missing-public-key', command(directory)[:-1] + [''], False, environment)
+	directory = fixture('sign-manifest-mismatch')
+	(directory / NAME).write_bytes(b'Corrupted synthetic archive')
+	check('sign-manifest-mismatch', command(directory), False, environment)
+	for label, changes in [('sign-manifest-tool-rejection', {'RETYPE_TEST_SIGN_REJECT': '1'}),
+		('sign-manifest-verification-rejection', {'RETYPE_TEST_REJECT': '1'}),
+		('sign-manifest-link-refusal', {})]:
+		directory = fixture(label)
+		if label == 'sign-manifest-link-refusal':
+			changes['RETYPE_TEST_OCCUPY_SIGNATURE'] = str(directory / 'SHA256SUMS.minisig')
+		check(label, command(directory), False, {**environment, **changes})
+		assert not (directory / 'SHA256SUMS.minisig').is_file()
+		assert any(directory.glob('.sign-release.*'))
+
+
 def macos_tests():
 	bin_dir = REPORT / 'macos-doubles'
 	bin_dir.mkdir()
@@ -128,7 +180,6 @@ case $1 in
 		[[ $* == *--deep* && $* == *--strict* && $* == *'=anchor apple generic'* ]]
 		[[ $* == *'certificate leaf[subject.OU] = "0000000000"'* ]]
 		id=com.lapilliworks.retype.cli
-		[[ $component != */Resources/retype ]] || id=$id.command
 		[[ $* == *"identifier = \\\"$id\\\""* ]]
 		[[ ${RETYPE_TEST_CODE_REJECT:-0} != 1 ]]
 	fi ;;
@@ -154,7 +205,7 @@ printf 'accepted\nsource=%s\n' "${RETYPE_TEST_SOURCE:-Notarized Developer ID}"
 	(app / 'Contents/MacOS/retype-notifier').write_bytes(DATA)
 	(app / 'Contents/Resources/retype').write_bytes(DATA)
 	command = [BASH, ROOT / SOURCES[3], app, 'Contents/Resources/retype', '0000000000',
-		'com.lapilliworks.retype.cli', 'com.lapilliworks.retype.cli.command']
+		'com.lapilliworks.retype.cli', 'com.lapilliworks.retype.cli']
 	environment = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']}
 	check('macos-adapter-positive', command, True, environment)
 	cases = {
@@ -172,6 +223,55 @@ printf 'accepted\nsource=%s\n' "${RETYPE_TEST_SOURCE:-Notarized Developer ID}"
 	check('macos-missing-team', command[:4] + [''] + command[5:], False, environment)
 	check('macos-wrong-team', command[:4] + ['1111111111'] + command[5:], False, environment)
 	check('macos-cli-traversal', command[:3] + ['Contents/Resources/../outside'] + command[4:], False, environment)
+
+
+def macos_signing_tests():
+	bin_dir = REPORT / 'macos-signing-doubles'
+	shutil.copytree(REPORT / 'macos-doubles', bin_dir)
+	codesign = bin_dir / 'codesign'
+	codesign.write_text(codesign.read_text().replace('*) exit 64 ;;', '''
+--force)
+	[[ $* == *--sign* && $* == *'--options runtime'* && $* == *--timestamp* ]]
+	[[ ${RETYPE_TEST_MAC_SIGN_REJECT:-0} != 1 ]]
+	[[ ! -d $component ]] || component=$component/Contents/MacOS/retype-notifier
+	printf 'SYNTHETIC-NOT-A-SIGNATURE\\n' >> "$component" ;;
+*) exit 64 ;;'''))
+	plutil = bin_dir / 'plutil'
+	plutil.write_text(plutil.read_text().replace('*) exit 64 ;;',
+		'status) printf \'%s\\n\' "${RETYPE_TEST_NOTARY_STATUS:-Accepted}" ;;\n*) exit 64 ;;'))
+	tool(bin_dir, 'ditto', 'printf \'Not a real ZIP\\n\' > "${!#}"\n')
+	tool(bin_dir, 'xcrun', '''
+case "$1 $2" in
+'notarytool submit')
+	[[ $* == *--keychain-profile* && $* == *--wait* && $* == *'--output-format json'* ]]
+	printf '{"status":"%s"}\\n' "${RETYPE_TEST_NOTARY_STATUS:-Accepted}" ;;
+'stapler staple') printf 'SYNTHETIC-NOT-A-TICKET\\n' > "$3/synthetic-ticket" ;;
+'stapler validate') [[ -f $3/synthetic-ticket && ${RETYPE_TEST_STAPLE_REJECT:-0} != 1 ]] ;;
+*) exit 64 ;;
+esac
+''')
+	environment = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']}
+	app = REPORT / 'synthetic.app'
+	before = {path: path.read_bytes() for path in app.rglob('*') if path.is_file()}
+	inputs = [BASH, ROOT / 'scripts/sign-macos.sh', app, 'Contents/Resources/retype', '0000000000',
+		'com.lapilliworks.retype.cli', 'com.lapilliworks.retype.cli',
+		'SYNTHETIC-NOT-PUBLISHER', 'SYNTHETIC-NOT-PROFILE']
+	output = REPORT / 'macos-signing-positive'
+	check('macos-signing-adapter-positive', inputs + [output], True, environment)
+	assert all(path.read_bytes() == data for path, data in before.items())
+	assert (output / 'retype.app/Contents/Resources/retype').read_bytes() != DATA
+	check('macos-signing-no-replacement', inputs + [output], False, environment)
+	check('macos-signing-missing-identity', inputs[:7] + [''] + inputs[8:] + [REPORT / 'missing-identity'],
+		False, environment)
+	check('macos-signing-missing-profile', inputs[:-1] + [''] + [REPORT / 'missing-profile'], False, environment)
+	for label, changes in [('macos-signing-tool-rejection', {'RETYPE_TEST_MAC_SIGN_REJECT': '1'}),
+		('macos-signing-notary-rejection', {'RETYPE_TEST_NOTARY_STATUS': 'Invalid'}),
+		('macos-signing-staple-rejection', {'RETYPE_TEST_STAPLE_REJECT': '1'}),
+		('macos-signing-native-predicate-rejection', {'RETYPE_TEST_NOTARISED': '0'})]:
+		output = REPORT / label
+		check(label, inputs + [output], False, {**environment, **changes})
+		assert (output / 'retype.app').is_dir()
+		assert all(path.read_bytes() == data for path, data in before.items())
 
 
 def embedding_tests():
@@ -215,16 +315,22 @@ for name in SOURCES:
 	shutil.copy2(source, destination)
 metadata['source_sha256'] = {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in SOURCES}
 (REPORT / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+complete = False
 try:
 	check('bash-verifier-syntax', [BASH, '-n', ROOT / SOURCES[0]])
 	check('bash-macos-syntax', [BASH, '-n', ROOT / SOURCES[3]])
+	check('bash-manifest-signer-syntax', [BASH, '-n', ROOT / 'scripts/sign-release.sh'])
+	check('bash-macos-signer-syntax', [BASH, '-n', ROOT / 'scripts/sign-macos.sh'])
 	manifest_tests()
+	manifest_signing_tests()
 	macos_tests()
+	macos_signing_tests()
 	embedding_tests()
+	complete = True
 finally:
 	(REPORT / 'results.json').write_text(json.dumps(RESULTS, indent=2) + '\n')
 	(REPORT / 'summary.txt').write_text(
-		f'Synthetic checks: {sum(result["passed"] for result in RESULTS)}/{len(RESULTS)} passed\n'
+		f'Synthetic checks: {sum(result["passed"] for result in RESULTS)}/{len(RESULTS)} passed; completed: {complete}\n'
 		'Native/publisher signature positives and PowerShell execution: BLOCKED, not passed\n'
 		'All fixtures, source snapshots and logs retained; no cleanup performed\n')
 print(f'Synthetic checks: {len(RESULTS)} passed. Native/publisher positives BLOCKED. Report: {REPORT}')
