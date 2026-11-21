@@ -6,11 +6,13 @@
 //! may not know is gone. The GUI owns the editor action; the CLI owns undo, cancel
 //! and resolve.
 
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
 use retype_core::error::Code;
 use retype_core::identifier::normalize;
+use retype_core::job::JobId;
 use serde_json::json;
 
 use crate::error::Result;
@@ -37,28 +39,33 @@ fn parse(uri: &str) -> std::result::Result<Parsed, String> {
 	}
 
 	let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
-	let mut parts = path.split('/').filter(|part| !part.is_empty());
+	let mut parts = path.split('/');
 
 	match parts.next() {
 		Some(kind) if kind.eq_ignore_ascii_case("job") => {}
 		_ => return Err(format!("'{uri}' names no job")),
 	}
 
-	let Some(id) = parts.next() else {
-		return Err(format!("'{uri}' names no job id"));
+	let id = parts
+		.next()
+		.and_then(|id| JobId::parse(id).ok())
+		.filter(|_| parts.next().is_none())
+		.ok_or_else(|| "a retype URI requires one full job id".to_string())?;
+	let action = if query.is_empty() {
+		"undo".to_string()
+	} else {
+		let (key, action) = query.split_once('=').ok_or("a retype URI has an invalid query")?;
+		if !key.eq_ignore_ascii_case("action") {
+			return Err("a retype URI has an unknown query field".to_string());
+		}
+		normalize(action)
 	};
-
-	let action = query
-		.split('&')
-		.find_map(|pair| {
-			let (name, value) = pair.split_once('=')?;
-			name.eq_ignore_ascii_case("action").then_some(value)
-		})
-		.unwrap_or("undo");
-
+	if !matches!(action.as_str(), "undo" | "cancel" | "resolve") {
+		return Err("a retype URI action must be undo, cancel or resolve".to_string());
+	}
 	Ok(Parsed {
-		id: normalize(id),
-		action: normalize(action),
+		id: id.to_string(),
+		action,
 	})
 }
 
@@ -67,6 +74,34 @@ pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
 		Ok(parsed) => parsed,
 		Err(message) => return Ok(ExitCode::from(output::fail(&Code::UsageArgs, message))),
 	};
+
+	/* The registered handler is public; launching it is not consent to act on a job. */
+	let instruction = match action.as_str() {
+		"undo" => format!("retype undo {id}"),
+		"cancel" => format!("retype jobs cancel {id}"),
+		_ => format!("retype jobs resolve {id} --now"),
+	};
+	let stdin = io::stdin();
+	let stderr = io::stderr();
+	if json || !stdin.is_terminal() || !stderr.is_terminal() {
+		return Ok(ExitCode::from(output::fail(
+			&Code::JobState,
+			format!("a retype URI cannot change job state without terminal confirmation; run `{instruction}`"),
+		)));
+	}
+	{
+		let mut stderr = stderr.lock();
+		write!(stderr, "Run `{instruction}`? Type yes to confirm: ")?;
+		stderr.flush()?;
+	}
+	let mut answer = String::new();
+	stdin.lock().read_line(&mut answer)?;
+	if !answer.trim().eq_ignore_ascii_case("yes") {
+		return Ok(ExitCode::from(output::fail(
+			&Code::JobState,
+			"URI action not confirmed",
+		)));
+	}
 
 	match action.as_str() {
 		"undo" => crate::undo::run(state_dir, Some(&id), false, json),
@@ -124,6 +159,27 @@ mod tests {
 		let parsed = parse("retype://job/01m6b4rararx3wrttkrgpp1783").expect("a URI");
 
 		assert_eq!(parsed.action, "undo");
+	}
+
+	#[test]
+	fn a_uri_requires_a_full_unambiguous_request() {
+		for uri in [
+			"retype://job/01m6",
+			"retype://job/01m6b4rararx3wrttkrgpp1783/extra",
+			"retype://job/01m6b4rararx3wrttkrgpp1783?action=undo&action=cancel",
+			"retype://job/01m6b4rararx3wrttkrgpp1783?unexpected=1",
+		] {
+			assert!(parse(uri).is_err(), "{uri}");
+		}
+	}
+
+	#[test]
+	fn json_uri_calls_cannot_perform_an_offline_mutation() {
+		let directory = tempfile::tempdir().unwrap();
+		let state = directory.path().join("never-created");
+		let result = super::run(&state, "retype://job/01m6b4rararx3wrttkrgpp1783", true).unwrap();
+		assert_ne!(result, std::process::ExitCode::SUCCESS);
+		assert!(!state.exists());
 	}
 
 	#[test]
