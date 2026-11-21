@@ -54,6 +54,41 @@ fn a_zip_directory_cannot_hide_bytes() {
 }
 
 #[test]
+fn tar_repacking_preserves_ownership_and_retains_the_source_when_zip_cannot() {
+	let directory = tempfile::tempdir().unwrap();
+	let input = directory.path().join("in.tar");
+	let mut writer = tar::Builder::new(fs::File::create(&input).unwrap());
+	let mut header = tar::Header::new_ustar();
+	header.set_mode(0o644);
+	header.set_uid(1000);
+	header.set_gid(1001);
+	header.set_username("owner").unwrap();
+	header.set_groupname("group").unwrap();
+	header.set_size(4);
+	header.set_mtime(1_700_000_001);
+	header.set_cksum();
+	writer.append_data(&mut header, "a.txt", &b"data"[..]).unwrap();
+	drop(writer.into_inner().unwrap());
+
+	let gzip = directory.path().join("out.tar.gz");
+	let cancel = Cancellation::default();
+	let report = repack(None, Native::Tar, Native::TarGz, &input, &gzip, &cancel).unwrap();
+	assert!(report.validation.fingerprint().is_some());
+	let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(gzip).unwrap()));
+	let entry = tar.entries().unwrap().next().unwrap().unwrap();
+	let header = entry.header();
+	assert_eq!((header.uid().unwrap(), header.gid().unwrap()), (1000, 1001));
+	assert_eq!(
+		(header.username().unwrap(), header.groupname().unwrap()),
+		(Some("owner"), Some("group"))
+	);
+
+	let zip = directory.path().join("out.zip");
+	let report = repack(None, Native::Tar, Native::Zip, &input, &zip, &cancel).unwrap();
+	assert!(report.validation.reason().unwrap().contains("ownership"));
+}
+
+#[test]
 fn a_tar_directory_cannot_hide_bytes() {
 	let directory = tempfile::tempdir().unwrap();
 	let input = directory.path().join("input.tar");

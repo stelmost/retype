@@ -106,7 +106,7 @@ pub(crate) fn repack_checkpointed(
 		))
 		.into());
 	}
-	let original = crate::safety::Fingerprint::of(input)?;
+	let original = crate::safety::Fingerprint::of_cancellable(input, cancellation)?;
 	// Absolute, because a repack through a tool changes the child's working directory:
 	// a relative path would then mean something else to the tool than it did here.
 	let input = &std::path::absolute(input)?;
@@ -125,22 +125,28 @@ pub(crate) fn repack_checkpointed(
 			let mut sink = Sink::open(to, staged.temp())?;
 
 			let mut budget = MAX_BYTES;
-			let expected = source.each(&mut sink, cancellation, &mut budget)?;
+			let mut expected = source.each(&mut sink, cancellation, &mut budget)?;
 			source.finish(cancellation)?;
 			sink.commit()?;
-			let fingerprint = crate::safety::Fingerprint::of(staged.temp())?;
+			let cannot_preserve_owner = to == Native::Zip && expected.clear_ownership();
+			let fingerprint = crate::safety::Fingerprint::of_cancellable(staged.temp(), cancellation)?;
 			verify_inventory(to, staged.temp(), &expected, cancellation)?;
-			if !fingerprint.matches(staged.temp())? {
+			if !fingerprint.matches_cancellable(staged.temp(), cancellation)? {
 				return Err(malformed("the output", &"archive changed during validation").into());
 			}
-			(String::new(), Validation::Verified(fingerprint))
+			let validation = if cannot_preserve_owner {
+				Validation::Unavailable("ZIP cannot preserve the TAR ownership metadata".to_string())
+			} else {
+				Validation::Verified(fingerprint)
+			};
+			(String::new(), validation)
 		}
 	};
 
 	// The staged file is the archive, so its length is the answer; committing first
 	// would only move it.
 	let bytes = fs::metadata(staged.temp())?.len();
-	if !original.matches(input)? {
+	if !original.matches_cancellable(input, cancellation)? {
 		return Err(malformed("the input", &"archive changed during conversion").into());
 	}
 	let report = Report {
@@ -310,7 +316,10 @@ impl Source {
 					let name = entry.name().to_string();
 					let mode = entry.unix_mode().unwrap_or(0o644);
 					let kind = mode & 0o170000;
-					let mtime = modified::from_zip(&entry)?;
+					let metadata = EntryMetadata::new(mode, modified::from_zip(&entry)?);
+					if mode & 0o6000 != 0 {
+						return Err(refused(&name, "privileged permission bits require explicit ownership"));
+					}
 
 					if kind == 0o120000 {
 						return Err(link_refused(&name));
@@ -325,14 +334,14 @@ impl Source {
 							return Err(refused(&name, "a directory entry has file data or a conflicting type"));
 						}
 						let name = inventory_name(&name, true)?;
-						sink.directory(&name, mode, mtime)?;
-						inventory.push(name, true, mode, mtime, 0, String::new());
+						sink.directory(&name, &metadata)?;
+						inventory.push(name, true, metadata, 0, String::new());
 						continue;
 					}
 					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
-					let mut reader = DigestReader::new(&mut entry);
-					sink.file(&name, mode, mtime, size, &mut reader)?;
+					let mut reader = DigestReader::new(&mut entry, cancellation);
+					sink.file(&name, &metadata, size, &mut reader)?;
 					let (sha256, read) = reader.finish();
 					if read != size {
 						return Err(short(&name, size, read));
@@ -341,7 +350,7 @@ impl Source {
 					if entry.read(&mut extra)? != 0 {
 						return Err(malformed("the zip", &"entry exceeds its declared size"));
 					}
-					inventory.push(name, false, mode, mtime, size, sha256);
+					inventory.push(name, false, metadata, size, sha256);
 				}
 			}
 			Self::Tar(archive) => {
@@ -354,14 +363,12 @@ impl Source {
 					stop_if_cancelled(cancellation)?;
 
 					let mut entry = entry.map_err(|error| malformed("the tar", &error))?;
-					let header = entry.header().clone();
-					let mtime = modified::from_tar(&mut entry)?;
-
 					/* Decode before OS path conversion so malformed names fail identically on every platform. */
 					let name = std::str::from_utf8(&entry.path_bytes())
 						.map_err(|_| malformed("the tar", &"entry name is not UTF-8"))?
 						.to_string();
-					let mode = header.mode().unwrap_or(0o644);
+					let header = entry.header().clone();
+					let metadata = EntryMetadata::from_tar(&header, &mut entry)?;
 
 					match header.entry_type() {
 						tar::EntryType::Directory => {
@@ -369,8 +376,8 @@ impl Source {
 								return Err(refused(&name, "a directory entry has file data"));
 							}
 							let name = inventory_name(&name, true)?;
-							sink.directory(&name, mode, mtime)?;
-							inventory.push(name, true, mode, mtime, 0, String::new());
+							sink.directory(&name, &metadata)?;
+							inventory.push(name, true, metadata, 0, String::new());
 							continue;
 						}
 						tar::EntryType::Regular | tar::EntryType::Continuous => {}
@@ -389,13 +396,13 @@ impl Source {
 					let size = entry.size();
 					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
-					let mut reader = DigestReader::new(&mut entry);
-					sink.file(&name, mode, mtime, size, &mut reader)?;
+					let mut reader = DigestReader::new(&mut entry, cancellation);
+					sink.file(&name, &metadata, size, &mut reader)?;
 					let (sha256, read) = reader.finish();
 					if read != size {
 						return Err(short(&name, size, read));
 					}
-					inventory.push(name, false, mode, mtime, size, sha256);
+					inventory.push(name, false, metadata, size, sha256);
 				}
 			}
 			Self::Tree { entries, root, at } => {
@@ -405,10 +412,14 @@ impl Source {
 					let entry = entries[*at].clone();
 					*at += 1;
 					let name = inventory_name(&entry.name, entry.directory)?;
+					if entry.mode & 0o6000 != 0 {
+						return Err(refused(&name, "privileged permission bits require explicit ownership"));
+					}
+					let metadata = EntryMetadata::new(entry.mode, entry.mtime);
 
 					if entry.directory {
-						sink.directory(&name, entry.mode, entry.mtime)?;
-						inventory.push(name, true, entry.mode, entry.mtime, 0, String::new());
+						sink.directory(&name, &metadata)?;
+						inventory.push(name, true, metadata, 0, String::new());
 						continue;
 					}
 
@@ -416,13 +427,13 @@ impl Source {
 
 					let mut file = File::open(root.join(&entry.name))
 						.map_err(|error| unreadable(&root.join(&entry.name), &error))?;
-					let mut reader = DigestReader::new(&mut file);
-					sink.file(&name, entry.mode, entry.mtime, entry.size, &mut reader)?;
+					let mut reader = DigestReader::new(&mut file, cancellation);
+					sink.file(&name, &metadata, entry.size, &mut reader)?;
 					let (sha256, read) = reader.finish();
 					if read != entry.size {
 						return Err(short(&name, entry.size, read));
 					}
-					inventory.push(name, false, entry.mode, entry.mtime, entry.size, sha256);
+					inventory.push(name, false, metadata, entry.size, sha256);
 				}
 			}
 		}
@@ -431,13 +442,101 @@ impl Source {
 	}
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct EntryMetadata {
+	mode: u32,
+	mtime: u64,
+	ownership: Ownership,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Ownership {
+	uid: u64,
+	gid: u64,
+	user: String,
+	group: String,
+}
+
+impl EntryMetadata {
+	fn new(mode: u32, mtime: u64) -> Self {
+		Self {
+			mode: mode & 0o7777,
+			mtime,
+			ownership: Ownership::default(),
+		}
+	}
+
+	fn from_tar(header: &tar::Header, entry: &mut tar::Entry<'_, impl Read>) -> Result<Self> {
+		let mut metadata = Self::new(header.mode().unwrap_or(0o644), modified::from_tar(entry)?);
+		let owner_name = |name: std::result::Result<Option<&str>, _>| {
+			name.map(|name| name.unwrap_or_default().to_string())
+				.map_err(|error| malformed("the tar", &error))
+		};
+		let number = |field: &[u8], value: std::io::Result<u64>| {
+			if field.iter().all(|byte| matches!(*byte, 0 | b' ')) {
+				Ok(0)
+			} else {
+				value
+			}
+		};
+		metadata.ownership = Ownership {
+			uid: number(&header.as_old().uid, header.uid())?,
+			gid: number(&header.as_old().gid, header.gid())?,
+			user: owner_name(header.username())?,
+			group: owner_name(header.groupname())?,
+		};
+		if let Some(extensions) = entry.pax_extensions()? {
+			for extension in extensions {
+				let extension = extension?;
+				if matches!(extension.key_bytes(), b"uid" | b"gid") {
+					let value = extension
+						.value()
+						.ok()
+						.and_then(|value| value.parse::<u64>().ok())
+						.ok_or_else(|| malformed("the tar", &"invalid PAX owner ID"))?;
+					let destination = if extension.key_bytes() == b"uid" {
+						&mut metadata.ownership.uid
+					} else {
+						&mut metadata.ownership.gid
+					};
+					*destination = value;
+					continue;
+				}
+				let destination = match extension.key_bytes() {
+					b"uname" => &mut metadata.ownership.user,
+					b"gname" => &mut metadata.ownership.group,
+					_ => continue,
+				};
+				*destination = extension
+					.value()
+					.map_err(|error| malformed("the tar", &error))?
+					.to_string();
+			}
+		}
+		Ok(metadata)
+	}
+
+	fn tar_header(&self, kind: tar::EntryType, size: u64) -> Result<tar::Header> {
+		let mut header = tar::Header::new_gnu();
+		header.set_entry_type(kind);
+		header.set_size(size);
+		header.set_mode(self.mode);
+		header.set_mtime(self.mtime);
+		header.set_uid(self.ownership.uid);
+		header.set_gid(self.ownership.gid);
+		header.set_username(&self.ownership.user)?;
+		header.set_groupname(&self.ownership.group)?;
+		header.set_cksum();
+		Ok(header)
+	}
+}
+
 /// One entry a finished archive must carry.
 #[derive(Debug, PartialEq, Eq)]
 struct InventoryEntry {
 	name: String,
 	directory: bool,
-	mode: u32,
-	mtime: u64,
+	metadata: EntryMetadata,
 	size: u64,
 	sha256: String,
 }
@@ -448,29 +547,38 @@ struct Inventory {
 }
 
 impl Inventory {
-	fn push(&mut self, name: String, directory: bool, mode: u32, mtime: u64, size: u64, sha256: String) {
+	fn push(&mut self, name: String, directory: bool, metadata: EntryMetadata, size: u64, sha256: String) {
 		self.entries.push(InventoryEntry {
 			name,
 			directory,
-			mode: mode & 0o7777,
-			mtime,
+			metadata,
 			size,
 			sha256,
 		});
+	}
+
+	fn clear_ownership(&mut self) -> bool {
+		let mut changed = false;
+		for entry in &mut self.entries {
+			changed |= std::mem::take(&mut entry.metadata.ownership) != Ownership::default();
+		}
+		changed
 	}
 }
 
 /// Hash the bytes a sink consumes, so the write can be checked byte for byte.
 struct DigestReader<'a> {
 	inner: &'a mut dyn Read,
+	cancellation: &'a Cancellation,
 	hash: Sha256,
 	bytes: u64,
 }
 
 impl<'a> DigestReader<'a> {
-	fn new(inner: &'a mut dyn Read) -> Self {
+	fn new(inner: &'a mut dyn Read, cancellation: &'a Cancellation) -> Self {
 		Self {
 			inner,
+			cancellation,
 			hash: Sha256::new(),
 			bytes: 0,
 		}
@@ -483,6 +591,9 @@ impl<'a> DigestReader<'a> {
 
 impl Read for DigestReader<'_> {
 	fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+		if self.cancellation.is_cancelled() {
+			return Err(std::io::Error::other(ArchiveCancelled));
+		}
 		let read = self.inner.read(buffer)?;
 		self.hash.update(&buffer[..read]);
 		self.bytes += read as u64;
@@ -571,27 +682,22 @@ impl Sink {
 		}
 	}
 
-	fn directory(&mut self, name: &str, mode: u32, mtime: u64) -> Result<()> {
+	fn directory(&mut self, name: &str, metadata: &EntryMetadata) -> Result<()> {
 		let name = archive_name(name)?;
 
 		match self {
 			Self::Zip(writer) => writer
-				.add_directory(&name, modified::options(mode, mtime)?)
+				.add_directory(&name, modified::options(metadata.mode, metadata.mtime)?)
 				.map_err(|error| unwritable(&error)),
 			Self::Tar(builder) => {
 				let name = name.trim_end_matches('/');
-				let mut header = tar::Header::new_gnu();
-				header.set_entry_type(tar::EntryType::Directory);
-				header.set_size(0);
-				header.set_mode(mode);
-				header.set_mtime(mtime);
-				header.set_cksum();
+				let mut header = metadata.tar_header(tar::EntryType::Directory, 0)?;
 
 				builder
 					.append_data(&mut header, format!("{name}/"), std::io::empty())
 					.map_err(|error| unwritable(&error))
 			}
-			Self::Tree(tree) => tree.directory(&name, mode),
+			Self::Tree(tree) => tree.directory(&name, metadata),
 			Self::Count => {
 				let _ = archive_name(&name)?;
 				Ok(())
@@ -600,13 +706,13 @@ impl Sink {
 	}
 
 	/// Copy one file, exactly `size` bytes of it.
-	fn file(&mut self, name: &str, mode: u32, mtime: u64, size: u64, bytes: &mut dyn Read) -> Result<()> {
+	fn file(&mut self, name: &str, metadata: &EntryMetadata, size: u64, bytes: &mut dyn Read) -> Result<()> {
 		let name = archive_name(name)?;
 
 		match self {
 			Self::Zip(writer) => {
 				writer
-					.start_file(&name, modified::options(mode, mtime)?)
+					.start_file(&name, modified::options(metadata.mode, metadata.mtime)?)
 					.map_err(|error| unwritable(&error))?;
 
 				let copied = std::io::copy(&mut bytes.take(size), writer).map_err(|error| unwritable(&error))?;
@@ -617,12 +723,7 @@ impl Sink {
 				}
 			}
 			Self::Tar(builder) => {
-				let mut header = tar::Header::new_gnu();
-				header.set_entry_type(tar::EntryType::Regular);
-				header.set_size(size);
-				header.set_mode(mode);
-				header.set_mtime(mtime);
-				header.set_cksum();
+				let mut header = metadata.tar_header(tar::EntryType::Regular, size)?;
 
 				let mut limited = bytes.take(size);
 				builder
@@ -634,7 +735,7 @@ impl Sink {
 					remaining => Err(short(&name, size, size - remaining)),
 				}
 			}
-			Self::Tree(tree) => tree.file(&name, mode, size, bytes),
+			Self::Tree(tree) => tree.file(&name, metadata, size, bytes),
 			Self::Count => {
 				let mut limited = bytes.take(size);
 				let copied = std::io::copy(&mut limited, &mut std::io::sink()).map_err(|error| unwritable(&error))?;
@@ -665,7 +766,8 @@ impl Sink {
 				/* Sync the writing handle so delayed writeback errors cannot be lost on close. */
 				file.sync_all()?;
 			}
-			Self::Tree(_) | Self::Count => {}
+			Self::Tree(tree) => tree.finish()?,
+			Self::Count => {}
 		}
 
 		Ok(())
@@ -687,6 +789,7 @@ struct TreeEntry {
 struct TreeSink {
 	root: PathBuf,
 	names: std::collections::BTreeSet<PathBuf>,
+	directories: BTreeMap<PathBuf, (u32, u64)>,
 }
 
 impl TreeSink {
@@ -695,18 +798,21 @@ impl TreeSink {
 		Ok(Self {
 			root: root.to_path_buf(),
 			names: Default::default(),
+			directories: Default::default(),
 		})
 	}
 
-	fn directory(&mut self, name: &str, mode: u32) -> Result<()> {
+	fn directory(&mut self, name: &str, metadata: &EntryMetadata) -> Result<()> {
+		check_tree_mode(name, metadata.mode)?;
 		unique_tree_name(&mut self.names, name)?;
 		let path = self.root.join(name);
 		fs::create_dir_all(&path)?;
-		set_mode(&path, mode);
+		self.directories.insert(path, (metadata.mode, metadata.mtime));
 		Ok(())
 	}
 
-	fn file(&mut self, name: &str, mode: u32, size: u64, bytes: &mut dyn Read) -> Result<()> {
+	fn file(&mut self, name: &str, metadata: &EntryMetadata, size: u64, bytes: &mut dyn Read) -> Result<()> {
+		check_tree_mode(name, metadata.mode)?;
 		unique_tree_name(&mut self.names, name)?;
 		let path = self.root.join(name);
 
@@ -721,9 +827,57 @@ impl TreeSink {
 			return Err(short(name, size, copied));
 		}
 
-		set_mode(&path, mode);
+		set_modified(&path, metadata.mtime)?;
+		set_mode(&path, metadata.mode)?;
 		Ok(())
 	}
+
+	fn finish(self) -> Result<()> {
+		/* Creating children changes directory timestamps. Restore leaves before parents. */
+		for (path, (mode, mtime)) in self.directories.into_iter().rev() {
+			set_modified(&path, mtime)?;
+			set_mode(&path, mode)?;
+		}
+		Ok(())
+	}
+}
+
+fn check_tree_mode(name: &str, mode: u32) -> Result<()> {
+	if mode & 0o6000 != 0 {
+		return Err(refused(name, "a staged tree cannot preserve privileged ownership"));
+	}
+	Ok(())
+}
+
+fn set_modified(path: &Path, seconds: u64) -> Result<()> {
+	let modified = std::time::UNIX_EPOCH
+		.checked_add(std::time::Duration::from_secs(seconds))
+		.ok_or_else(|| {
+			refused(
+				&path.display().to_string(),
+				"the timestamp is outside the filesystem range",
+			)
+		})?;
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES};
+		options
+			.access_mode(FILE_WRITE_ATTRIBUTES)
+			.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+	}
+	options
+		.open(path)?
+		.set_times(fs::FileTimes::new().set_modified(modified))?;
+	if fs::metadata(path)?.modified()? != modified {
+		return Err(refused(
+			&path.display().to_string(),
+			"the filesystem did not preserve the timestamp",
+		));
+	}
+	Ok(())
 }
 
 fn unique_tree_name(names: &mut std::collections::BTreeSet<PathBuf>, name: &str) -> Result<()> {
@@ -816,15 +970,16 @@ fn mode_of(metadata: &fs::Metadata) -> u32 {
 	}
 }
 
-fn set_mode(path: &Path, mode: u32) {
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt;
-		let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777));
+		fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777))
 	}
 	#[cfg(not(unix))]
 	{
 		let _ = (path, mode);
+		Ok(())
 	}
 }
 
@@ -1126,10 +1281,17 @@ fn malformed(what: &str, error: &dyn std::fmt::Display) -> Error {
 	))
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("the repack was cancelled")]
+struct ArchiveCancelled;
+
 fn unwritable(error: &(dyn std::error::Error + 'static)) -> Error {
 	let mut cause = Some(error);
 	while let Some(current) = cause {
 		if let Some(io) = current.downcast_ref::<std::io::Error>() {
+			if io.get_ref().is_some_and(|cause| cause.is::<ArchiveCancelled>()) {
+				return Diagnostic::global(Code::JobCancelled, ArchiveCancelled.to_string()).into();
+			}
 			if crate::error::code_for_io(io) == Code::IoSpace {
 				return Error::Diagnostic(Diagnostic::global(
 					Code::IoSpace,
@@ -1197,6 +1359,38 @@ mod tests {
 	}
 
 	#[test]
+	fn cancellation_stops_copying_within_one_archive_entry() {
+		let token = Cancellation::default();
+		let mut data = &b"more data"[..];
+		let mut reader = DigestReader::new(&mut data, &token);
+		let mut buffer = [0; 4];
+		assert_eq!(reader.read(&mut buffer).unwrap(), 4);
+		token.request_cancel();
+		let error = reader.read(&mut buffer).unwrap_err();
+		assert_eq!(unwritable(&error).code(), Code::JobCancelled);
+	}
+
+	#[test]
+	fn the_7z_tree_keeps_entry_times_after_children_are_written() {
+		let directory = tempfile::tempdir().unwrap();
+		let mut tree = TreeSink::new(directory.path()).unwrap();
+		let seconds = 1_700_000_001;
+		tree.directory("folder", &EntryMetadata::new(0o755, seconds)).unwrap();
+		tree.file(
+			"folder/a.txt",
+			&EntryMetadata::new(0o644, seconds + 1),
+			4,
+			&mut &b"data"[..],
+		)
+		.unwrap();
+		tree.finish().unwrap();
+		for (name, time) in [("folder", seconds), ("folder/a.txt", seconds + 1)] {
+			let modified = fs::metadata(directory.path().join(name)).unwrap().modified().unwrap();
+			assert_eq!(modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(), time);
+		}
+	}
+
+	#[test]
 	fn archive_write_errors_preserve_storage_exhaustion_from_the_error_chain() {
 		let full = std::io::Error::from(std::io::ErrorKind::StorageFull);
 		assert_eq!(unwritable(&full).code(), Code::IoSpace);
@@ -1211,7 +1405,9 @@ mod tests {
 	fn writing_a_tar_to_the_full_device_reports_storage_exhaustion() {
 		let full = fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
 		let mut sink = Sink::Tar(Box::new(tar::Builder::new(TarSink::Plain(full))));
-		let error = sink.file("entry.txt", 0o644, 0, 1, &mut &b"x"[..]).unwrap_err();
+		let error = sink
+			.file("entry.txt", &EntryMetadata::new(0o644, 0), 1, &mut &b"x"[..])
+			.unwrap_err();
 		assert_eq!(error.code(), Code::IoSpace);
 	}
 
@@ -1520,8 +1716,9 @@ mod seven_rule_tests {
 	fn a_tree_never_truncates_an_entry_with_an_equivalent_name() {
 		let dir = tempfile::tempdir().unwrap();
 		let mut tree = TreeSink::new(dir.path()).unwrap();
-		tree.file("a.txt", 0o644, 5, &mut &b"first"[..]).unwrap();
-		let error = tree.file("./a.txt", 0o644, 6, &mut &b"second"[..]).unwrap_err();
+		let metadata = EntryMetadata::new(0o644, 1_700_000_001);
+		tree.file("a.txt", &metadata, 5, &mut &b"first"[..]).unwrap();
+		let error = tree.file("./a.txt", &metadata, 6, &mut &b"second"[..]).unwrap_err();
 		assert_eq!(error.code(), Code::Unsupported);
 		assert_eq!(fs::read(dir.path().join("a.txt")).unwrap(), b"first");
 	}
