@@ -95,6 +95,17 @@ jobs:
         shell: bash
         timeout-minutes: 20
         run: ./tests/run.sh
+      - name: Check macOS worker modes (source only)
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 2
+        run: python3 tests/macos-modes.py --report "$RETYPE_TEST_REPORT_DIR/worker-modes-source"
+      - name: Check native macOS archive boundaries in owned staging
+        if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          python3 tests/macos-archive.py --report "$RETYPE_TEST_REPORT_DIR/archive-boundaries" --allow-native-staging
       - name: Run Windows suite
         if: runner.os == 'Windows'
         shell: pwsh

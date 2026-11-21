@@ -64,6 +64,8 @@ Compilation has its own deadline before the shared execution budget starts. Each
 - `tests/installed.py <archive> --preview-cli-only --allow-user-integration --report <dir>`: Windows unsigned CLI/data/PATH smoke on an explicitly approved disposable profile; owned PATH cleanup, not signed/desktop qualification
 - macOS `tests/installed.py --preview` also requires `--allow-user-integration` on an explicitly authorized real-user profile; never grant that consent automatically in hosted CI
 - `tests/test_installed.py`: Synthetic assertion regression; matching builds earn evidence, changed builds report unverified, and self-consistent wrong manifest claims fail
+- `python3 tests/macos-modes.py --report <dir>`: Source-only notifier/URI mode and child-lifecycle regression guard; no native behavior claim
+- `python3 tests/macos-archive.py --report <dir> --allow-native-staging`: macOS 15 arm64 native libarchive/canary/xattr boundaries in owned retained staging; no signed-app/staple or real-user installed proof
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry
 - `tests/windows-storage-faults.ps1 -Worker <core-test-exe> -Report <new-dir>`: Actual disk exhaustion on a new 64 MiB virtual NTFS disk; requires an elevated orchestrator and active ordinary-user desktop, retains evidence and detaches the disk
 - `tests/install.ps1 -Binary <path> [-Report <new-dir>]`: Windows installer/update/removal fixture with narrow registry/PATH doubles, normally invoked by Cargo; native fixture runtime and its existing 60-second Cargo budget still need qualification
