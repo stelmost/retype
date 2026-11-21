@@ -34,6 +34,7 @@ use crate::execute::{Cancellation, CheckedOutput, CheckpointedOutput, Publicatio
 use crate::registry::Native;
 
 mod modified;
+mod zip_entries;
 
 /// How many entries one repack will carry.
 pub const MAX_ENTRIES: usize = 100_000;
@@ -120,7 +121,7 @@ pub(crate) fn repack_checkpointed(
 			Validation::Unavailable("independent 7z archive validation is unavailable".to_string()),
 		),
 		_ => {
-			let mut source = Source::open(from, input)?;
+			let mut source = Source::open(from, input, cancellation)?;
 			let mut sink = Sink::open(to, staged.temp())?;
 
 			let mut budget = MAX_BYTES;
@@ -174,7 +175,7 @@ fn through(
 	match from {
 		Native::SevenZip => notes = extract(tool, input, tree, cancellation)?,
 		other => {
-			let mut source = Source::open(other, input)?;
+			let mut source = Source::open(other, input, cancellation)?;
 			let mut sink = Sink::Tree(TreeSink::new(tree)?);
 
 			let mut budget = MAX_BYTES;
@@ -248,13 +249,16 @@ impl Source {
 		Ok(())
 	}
 
-	fn open(codec: Native, path: &Path) -> Result<Self> {
+	fn open(codec: Native, path: &Path, cancellation: &Cancellation) -> Result<Self> {
 		let file = File::open(path).map_err(|error| unreadable(path, &error))?;
 
 		match codec {
-			Native::Zip => Ok(Self::Zip(
-				zip::ZipArchive::new(file).map_err(|error| unreadable(path, &error))?,
-			)),
+			Native::Zip => {
+				let mut directory = file.try_clone()?;
+				let archive = zip::ZipArchive::new(file).map_err(|error| unreadable(path, &error))?;
+				zip_entries::check(&mut directory, &archive, cancellation)?;
+				Ok(Self::Zip(archive))
+			}
 			Native::Tar => Ok(Self::Tar(Box::new(tar::Archive::new(TarSource::Plain(file))))),
 			Native::TarGz => Ok(Self::Tar(Box::new(tar::Archive::new(TarSource::Gzip(Box::new(
 				flate2::read::MultiGzDecoder::new(file),
@@ -308,27 +312,23 @@ impl Source {
 					let kind = mode & 0o170000;
 					let mtime = modified::from_zip(&entry)?;
 
+					if kind == 0o120000 {
+						return Err(link_refused(&name));
+					}
+					if !matches!(kind, 0 | 0o100000 | 0o040000) {
+						return Err(refused(&name, "only regular files and directories can be carried"));
+					}
+
+					let size = entry.size();
 					if entry.is_dir() || kind == 0o040000 {
+						if kind == 0o100000 || size != 0 || entry.read(&mut [0])? != 0 {
+							return Err(refused(&name, "a directory entry has file data or a conflicting type"));
+						}
 						let name = inventory_name(&name, true)?;
 						sink.directory(&name, mode, mtime)?;
 						inventory.push(name, true, mode, mtime, 0, String::new());
 						continue;
 					}
-
-					if kind == 0o120000 {
-						return Err(link_refused(&name));
-					}
-
-					if kind != 0 && kind != 0o100000 {
-						return Err(Error::Diagnostic(Diagnostic::global(
-							Code::Unsupported,
-							format!(
-								"'{name}' is mode {mode:o}, and an archive of files and directories is all this carries"
-							),
-						)));
-					}
-
-					let size = entry.size();
 					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
 					let mut reader = DigestReader::new(&mut entry);
@@ -365,6 +365,9 @@ impl Source {
 
 					match header.entry_type() {
 						tar::EntryType::Directory => {
+							if entry.size() != 0 {
+								return Err(refused(&name, "a directory entry has file data"));
+							}
 							let name = inventory_name(&name, true)?;
 							sink.directory(&name, mode, mtime)?;
 							inventory.push(name, true, mode, mtime, 0, String::new());
@@ -499,7 +502,7 @@ fn inventory_name(name: &str, directory: bool) -> Result<String> {
 
 /// Reopen a native output and prove it carries the source inventory.
 fn verify_inventory(codec: Native, path: &Path, expected: &Inventory, cancellation: &Cancellation) -> Result<()> {
-	let mut source = Source::open(codec, path)?;
+	let mut source = Source::open(codec, path, cancellation)?;
 	let mut sink = Sink::Count;
 	let mut budget = MAX_BYTES;
 	let actual = source.each(&mut sink, cancellation, &mut budget)?;
