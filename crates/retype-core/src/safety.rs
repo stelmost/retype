@@ -27,9 +27,10 @@ impl Snapshot {
 
 	pub fn open_cancellable(source: &Path, cancellation: &crate::execute::Cancellation) -> Result<Self> {
 		let source = crate::fsx::entry_path(source)?;
-		let directory = tempfile::Builder::new()
-			.prefix(crate::convert::TEMP_IN_PREFIX)
-			.tempdir_in(source.parent().expect("resolved parent"))?;
+		let directory = crate::fsx::staging_directory(
+			source.parent().expect("resolved parent"),
+			crate::convert::TEMP_IN_PREFIX,
+		)?;
 		let path = directory.path().join(source.file_name().expect("resolved name"));
 		let original = copy_snapshot_cancellable(&source, &path, cancellation)?;
 		Ok(Self {
@@ -478,10 +479,7 @@ pub fn remove_owned_cancellable(
 fn remove_owned_path(path: &Path, expected: &Fingerprint, cancellation: &crate::execute::Cancellation) -> Result<()> {
 	let path = crate::fsx::entry_path(path)?;
 	let parent = path.parent().expect("resolved parent");
-	let directory = tempfile::Builder::new()
-		.prefix(".retype-recovery.")
-		.tempdir_in(parent)?
-		.keep();
+	let directory = crate::fsx::staging_directory(parent, ".retype-recovery.")?.keep();
 	let claimed = directory.join(path.file_name().expect("resolved name"));
 	if let Err(error) = crate::fsx::rename_noreplace(&path, &claimed) {
 		fs::remove_dir(&directory)?;

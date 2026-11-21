@@ -68,7 +68,7 @@ impl StagedOutput {
 		let parent = target.parent().ok_or_else(|| Error::NoParent(target.clone()))?;
 		let name = target.file_name().ok_or_else(|| Error::NoFileName(target.clone()))?;
 		/* A private directory allows tools that require an absent output or replace it themselves. */
-		let directory = tempfile::Builder::new().prefix(TEMP_PREFIX).tempdir_in(parent)?;
+		let directory = crate::fsx::staging_directory(parent, TEMP_PREFIX)?;
 		Ok(Self {
 			temp: directory.path().join(name),
 			target,
@@ -297,7 +297,7 @@ pub fn prepare_input(target: &Path, stem: &str, source_format: &str) -> Result<P
 		}),
 		Err(Error::Exists(_)) => {
 			let parent = target.parent().ok_or_else(|| Error::NoParent(target.to_path_buf()))?;
-			let directory = tempfile::Builder::new().prefix(TEMP_IN_PREFIX).tempdir_in(parent)?;
+			let directory = crate::fsx::staging_directory(parent, TEMP_IN_PREFIX)?;
 			let input = directory.path().join(format!("{stem}.{source_format}"));
 			crate::safety::copy_snapshot(target, &input)?;
 			Ok(PreparedInput::Snapshot {
@@ -361,6 +361,11 @@ mod tests {
 		let dir = tempdir();
 		let target = dir.path().join("private.zip");
 		let staged = StagedOutput::new(&target).unwrap();
+		let stage_mode = fs::metadata(staged.temp().parent().unwrap())
+			.unwrap()
+			.permissions()
+			.mode();
+		assert_eq!(stage_mode & 0o077, 0);
 		fs::write(staged.temp(), b"converted bytes").unwrap();
 		fs::set_permissions(staged.temp(), fs::Permissions::from_mode(0o644)).unwrap();
 		staged.restrict_access().unwrap();
