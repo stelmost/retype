@@ -140,7 +140,7 @@ pub fn dataless(path: &Path) -> bool {
 	{
 		use std::io::Read;
 
-		let Ok(mut file) = std::fs::File::open(path) else {
+		let Ok(mut file) = crate::safety::regular_file(path) else {
 			return false;
 		};
 
@@ -243,6 +243,25 @@ rclone /home/someone/cloud fuse.rclone rw,nosuid,nodev,relatime 0 0
 
 		// The outer mount claims the path too, and the inner one is where the file is.
 		assert_eq!(fuse_provider(Path::new("/home/someone/a.jpg"), mounts), None);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn placeholder_probe_does_not_wait_for_a_fifo_writer() {
+		use std::os::unix::ffi::OsStrExt;
+		use std::time::Duration;
+
+		let dir = tempfile::tempdir().unwrap();
+		let fifo = dir.path().join("input.png");
+		let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+		assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+		let (send, receive) = std::sync::mpsc::channel();
+		std::thread::spawn(move || send.send(dataless(&fifo)).unwrap());
+		assert!(
+			!receive
+				.recv_timeout(Duration::from_secs(2))
+				.expect("placeholder probe blocked")
+		);
 	}
 
 	#[test]

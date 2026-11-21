@@ -373,7 +373,7 @@ fn open_regular_file(path: &Path, options: &mut OpenOptions) -> io::Result<File>
 	Ok(file)
 }
 
-fn regular_file(path: &Path) -> io::Result<File> {
+pub(crate) fn regular_file(path: &Path) -> io::Result<File> {
 	let mut options = OpenOptions::new();
 	options.read(true);
 	open_regular_file(path, &mut options)
