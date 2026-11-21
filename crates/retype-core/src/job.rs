@@ -461,7 +461,7 @@ pub struct Parked {
 	/// Originating registration, needed to recheck inherited policy after a wait.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub watch_root: Option<PathBuf>,
-	/// The explicitly selected configuration for a submitted conversion.
+	/// The selected configuration for a submission, excluding quota for a storage wait.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub config_revision: Option<String>,
 	/// Whether the confirmed resolution permits replacing existing outputs.

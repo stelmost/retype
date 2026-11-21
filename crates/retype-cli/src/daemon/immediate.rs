@@ -284,7 +284,11 @@ pub(super) fn run_matching(
 		.lock()
 		.ok()
 		.and_then(|jobs| jobs.iter().find(|job| &job.id == id).cloned());
-	if config_revision.is_some_and(|revision| revision != registry.revision()) {
+	let expected_revision = match admitted.as_ref().and_then(|job| job.parked.as_ref()) {
+		Some(parked) if parked.reason == "storage" => registry.revision_without_quota(),
+		_ => registry.revision(),
+	};
+	if config_revision.is_some_and(|revision| revision != expected_revision) {
 		if let Some(job) = admitted {
 			let error =
 				Diagnostic::global(Code::CfgValidation, "the daemon configuration changed after submission").into();
@@ -437,7 +441,7 @@ pub(super) fn run_matching(
 				shared,
 				started,
 				snapshot.original.clone(),
-				super::watcher::StorageOrigin::Submitted(config_revision),
+				super::watcher::StorageOrigin::Submitted(config_revision.map(|_| registry.revision_without_quota())),
 				request.force,
 				error,
 				cancellation,
