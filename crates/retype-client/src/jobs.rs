@@ -27,9 +27,13 @@ pub fn is_terminal(state: JobState) -> bool {
 /// Submit and wait for content-bound acceptance, releasing the connection between polls.
 /// `Client::jobs_submit` returns only a durable request handle, available during capture for cancellation.
 pub fn submit(context: &Context, request: &JobSubmit) -> Result<JobSubmitted> {
+	submit_matching(context, request, None)
+}
+
+pub fn submit_matching(context: &Context, request: &JobSubmit, config_revision: Option<&str>) -> Result<JobSubmitted> {
 	let submitted = {
 		let mut client = session::connect_or_spawn(context)?;
-		client.jobs_submit(request)?
+		client.jobs_submit_matching(request, config_revision)?
 	};
 	loop {
 		let observed: Result<Job> = (|| {

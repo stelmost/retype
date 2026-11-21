@@ -461,6 +461,9 @@ pub struct Parked {
 	/// Originating registration, needed to recheck inherited policy after a wait.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub watch_root: Option<PathBuf>,
+	/// The explicitly selected configuration for a submitted conversion.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub config_revision: Option<String>,
 	/// Whether the confirmed resolution permits replacing existing outputs.
 	#[serde(default, skip_serializing_if = "is_false")]
 	pub force: bool,
@@ -772,6 +775,7 @@ mod tests {
 			dropped: Vec::new(),
 			consume: true,
 			watch_root: Some(PathBuf::from("photos")),
+			config_revision: None,
 			force: false,
 			input_fingerprint: None,
 		});

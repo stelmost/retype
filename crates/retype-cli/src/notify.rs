@@ -583,6 +583,7 @@ mod tests {
 			dropped: Vec::new(),
 			consume: true,
 			watch_root: None,
+			config_revision: None,
 			force: false,
 			input_fingerprint: None,
 		});

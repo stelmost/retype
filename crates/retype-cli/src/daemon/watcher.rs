@@ -1161,7 +1161,9 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 
 	let (source, target, consume_source) = match &work.kind {
 		Kind::Rename { source, target, .. } => (source.clone(), target.clone(), true),
-		Kind::Immediate(request) => (request.input.clone(), request.input.clone(), false),
+		Kind::Immediate(request) | Kind::ConfiguredImmediate { request, .. } => {
+			(request.input.clone(), request.input.clone(), false)
+		}
 		Kind::Deferred { source, .. } => (source.clone(), source.clone(), true),
 		Kind::Resume { job, .. } => {
 			let mut job = job.as_ref().clone();
@@ -1594,7 +1596,7 @@ fn run(
 				shared,
 				started,
 				snapshot.original.clone(),
-				Some(&root),
+				StorageOrigin::Watched(&root),
 				force,
 				&error,
 				cancellation,
@@ -1783,7 +1785,7 @@ fn run(
 		}
 	}
 	publish_persisted(shared, &job);
-	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
+	mark(&registry, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
 
 /// A job's last word, whether it got as far as an output or not.
@@ -1830,11 +1832,16 @@ fn settled(
 	}
 }
 
+pub(super) enum StorageOrigin<'a> {
+	Watched(&'a Path),
+	Submitted(Option<&'a str>),
+}
+
 pub(super) fn park_storage(
 	shared: &Shared,
 	mut job: Job,
 	fingerprint: retype_core::safety::Fingerprint,
-	watch_root: Option<&Path>,
+	origin: StorageOrigin<'_>,
 	force: bool,
 	error: &retype_core::error::Error,
 	cancellation: &Cancellation,
@@ -1843,6 +1850,10 @@ pub(super) fn park_storage(
 	job.source.size = fingerprint.bytes;
 	job.source.fingerprint = Some(fingerprint.clone());
 	job.error = Some(JobError::new(error.code().to_string(), error.to_string()));
+	let (watch_root, config_revision) = match origin {
+		StorageOrigin::Watched(root) => (Some(root.to_path_buf()), None),
+		StorageOrigin::Submitted(revision) => (None, revision.map(str::to_string)),
+	};
 	job.parked = Some(retype_core::job::Parked {
 		reason: "storage".to_string(),
 		deadline: None,
@@ -1852,7 +1863,8 @@ pub(super) fn park_storage(
 		corrected: None,
 		dropped: Vec::new(),
 		consume: watch_root.is_some(),
-		watch_root: watch_root.map(Path::to_path_buf),
+		watch_root,
+		config_revision,
 		force,
 		input_fingerprint: Some(fingerprint),
 	});
@@ -1916,8 +1928,8 @@ pub fn carried(shared: &Shared, id: &retype_core::job::JobId) -> Option<retype_c
 ///
 /// Best effort: a filesystem that refuses attributes, or a policy that turns them
 /// off, leaves the journal as the only record and changes nothing else.
-pub fn mark(shared: &Shared, outputs: &[Output], intent: &str) {
-	if !shared.registry().provenance().xattr {
+pub fn mark(registry: &Registry, outputs: &[Output], intent: &str) {
+	if !registry.provenance().xattr {
 		return;
 	}
 

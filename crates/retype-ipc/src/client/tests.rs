@@ -43,6 +43,27 @@ mod unix {
 	}
 
 	#[test]
+	fn a_checked_submission_does_not_fall_back_to_an_unchecked_request() {
+		let (client, server) = UnixStream::pair().unwrap();
+		let mut client = Client::from_stream(client);
+		let error = client
+			.jobs_submit_matching(
+				&crate::JobSubmit {
+					input: "input.png".into(),
+					intent: "webp".into(),
+					output: None,
+					force: false,
+					mode: crate::SubmitMode::Immediate,
+				},
+				Some("expected-revision"),
+			)
+			.unwrap_err();
+		assert!(matches!(error, ClientError::Rpc(error) if error.code == retype_core::error::Code::CfgValidation));
+		drop(client);
+		assert!(read_frame(&mut BufReader::new(server)).unwrap().is_none());
+	}
+
+	#[test]
 	fn a_lost_submission_acknowledgement_retains_the_client_chosen_handle() {
 		let (client, server) = UnixStream::pair().unwrap();
 		let (send, receive) = mpsc::sync_channel(1);

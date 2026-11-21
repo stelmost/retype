@@ -739,6 +739,7 @@ mod tests {
 				dropped: Vec::new(),
 				consume: false,
 				watch_root: None,
+				config_revision: None,
 				force: false,
 				input_fingerprint: None,
 			}),
@@ -790,6 +791,7 @@ mod tests {
 			dropped: Vec::new(),
 			consume: false,
 			watch_root: None,
+			config_revision: None,
 			force: false,
 			input_fingerprint: None,
 		});

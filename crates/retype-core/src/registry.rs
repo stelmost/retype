@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
@@ -290,6 +291,7 @@ impl<'a> Resolved<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Registry {
+	revision: String,
 	tools: BTreeMap<String, Tool>,
 	presets: BTreeMap<String, Preset>,
 	/// Conditions the configuration raised but did not refuse, such as a user
@@ -327,6 +329,11 @@ impl Registry {
 	/// internal rather than mask.
 	pub fn builtin() -> Result<Self, Diagnoses> {
 		Self::load_in(include_str!("../builtin.toml"), "the built-in configuration")
+	}
+
+	/// Binds a submission to the configuration actually read, not to a mutable pathname.
+	pub fn revision(&self) -> &str {
+		&self.revision
 	}
 
 	pub fn load(text: &str) -> Result<Self, Diagnoses> {
@@ -800,6 +807,7 @@ impl Registry {
 		};
 
 		let registry = Self {
+			revision: format!("{:x}", Sha256::digest(text.as_bytes())),
 			tools,
 			presets,
 			backends,

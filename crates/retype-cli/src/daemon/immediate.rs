@@ -229,7 +229,7 @@ fn targets(
 
 /// The record a submitted job writes before a runner reaches it, so a client can
 /// see it waiting rather than only once it starts.
-pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
+pub fn queued(shared: &Shared, registry: &Registry, prepared: &Prepared, id: &JobId) -> Job {
 	let now = now_ms();
 	let mut source = source(prepared);
 	source.fingerprint = super::watcher::carried_fingerprint(shared, id);
@@ -239,7 +239,7 @@ pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
 		created: now,
 		updated: now,
 		source,
-		intent: Some(print::intent(&prepared.resolved, &shared.registry())),
+		intent: Some(print::intent(&prepared.resolved, registry)),
 		outputs: prepared
 			.plans
 			.iter()
@@ -268,17 +268,36 @@ pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
 
 /// Run one submitted conversion and publish its terminal record.
 pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancellation) {
+	run_matching(shared, request, id, cancellation, None);
+}
+
+pub(super) fn run_matching(
+	shared: &Shared,
+	request: &Request,
+	id: &JobId,
+	cancellation: &Cancellation,
+	config_revision: Option<&str>,
+) {
+	let registry = shared.registry();
 	let admitted = shared
 		.jobs
 		.lock()
 		.ok()
 		.and_then(|jobs| jobs.iter().find(|job| &job.id == id).cloned());
+	if config_revision.is_some_and(|revision| revision != registry.revision()) {
+		if let Some(job) = admitted {
+			let error =
+				Diagnostic::global(Code::CfgValidation, "the daemon configuration changed after submission").into();
+			super::watcher::fail_before_conversion(shared, &job, "cannot use the selected configuration", &error);
+		}
+		return;
+	}
 	let mut preparing = match admitted {
 		Some(job) => job,
-		None => match declare(&shared.registry(), request) {
-			Ok(prepared) => queued(shared, &prepared, id),
+		None => match declare(&registry, request) {
+			Ok(prepared) => queued(shared, &registry, &prepared, id),
 			Err(problems) => {
-				publish(shared, &unsatisfied(shared, request, problems, id));
+				publish(shared, &unsatisfied(shared, &registry, request, problems, id));
 				return;
 			}
 		},
@@ -319,10 +338,10 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		super::watcher::report_unrecorded_failure(shared, &preparing, &error);
 		return;
 	}
-	let prepared = match prepare_with(&shared.registry(), request, Some(&shared.state_dir), cancellation) {
+	let prepared = match prepare_with(&registry, request, Some(&shared.state_dir), cancellation) {
 		Ok(prepared) => prepared,
 		Err(problems) => {
-			let mut failed = unsatisfied(shared, request, problems, id);
+			let mut failed = unsatisfied(shared, &registry, request, problems, id);
 			if cancellation.is_cancelled() {
 				failed.set_state(JobState::Cancelled);
 				failed.error = Some(JobError::new(
@@ -345,7 +364,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			return;
 		}
 	}
-	let mut started = queued(shared, &prepared, id);
+	let mut started = queued(shared, &registry, &prepared, id);
 	started.admission = preparing.admission;
 	started.parked = super::watcher::carried(shared, id);
 	if cancellation.is_cancelled() {
@@ -365,6 +384,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			dropped: Vec::new(),
 			consume: false,
 			watch_root: None,
+			config_revision: config_revision.map(str::to_string),
 			force: request.force,
 			input_fingerprint: Some(snapshot.original.clone()),
 		});
@@ -391,7 +411,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	let undo_record = store.save_with_policy_cancellable(
 		retype_core::undo::Subject {
 			id: id.clone(),
-			intent: print::intent(&prepared.resolved, &shared.registry()),
+			intent: print::intent(&prepared.resolved, &registry),
 			machine: shared.machine.clone(),
 			bytes: prepared.input.clone(),
 			source_path: prepared.input.clone(),
@@ -407,7 +427,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 				.collect(),
 			consume_source: started.consume_source,
 		},
-		shared.registry().undo(),
+		registry.undo(),
 		cancellation,
 	);
 
@@ -417,7 +437,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 				shared,
 				started,
 				snapshot.original.clone(),
-				None,
+				super::watcher::StorageOrigin::Submitted(config_revision),
 				request.force,
 				error,
 				cancellation,
@@ -439,7 +459,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 
 	if let Ok(Some(record)) = &undo_record {
 		if record.source_fingerprint.as_ref() != Some(&snapshot.original) {
-			let mut failed = queued(shared, &prepared, id);
+			let mut failed = queued(shared, &registry, &prepared, id);
 			failed.fail(JobError::new(
 				Code::IoFailed.to_string(),
 				"input changed while its recovery copy was prepared",
@@ -565,7 +585,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	}
 	crate::daemon::watcher::publish_persisted(shared, &job);
-	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
+	mark(&registry, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
 
 /// The stderr tail, when the tool said anything worth keeping.
@@ -624,15 +644,14 @@ fn record(
 
 /// A job that could not be planned when its turn came, which is the one failure a
 /// submitted job can suffer between acceptance and running.
-fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &JobId) -> Job {
+fn unsatisfied(shared: &Shared, registry: &Registry, request: &Request, problems: Diagnoses, id: &JobId) -> Job {
 	let code = problems.codes().first().cloned().unwrap_or(Code::ToolFailed);
 	let name = request
 		.input
 		.file_name()
 		.and_then(|name| name.to_str())
 		.unwrap_or_default();
-	let format = shared
-		.registry()
+	let format = registry
 		.split(name)
 		.map(|(_, format)| format.to_string())
 		.unwrap_or_default();

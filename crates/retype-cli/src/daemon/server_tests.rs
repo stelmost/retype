@@ -503,6 +503,7 @@ fn parked_job(server: &Server, directory: &Path, reason: &str, state: JobState) 
 			dropped: Vec::new(),
 			consume: false,
 			watch_root: None,
+			config_revision: None,
 			force: false,
 			input_fingerprint: Some(retype_core::safety::Fingerprint::of(&source).unwrap()),
 		}),
@@ -1274,6 +1275,45 @@ fn a_cli_submission_is_journalled_before_it_waits_in_the_queue() {
 	);
 	replay.jobs[0].admission.as_ref().unwrap().verify(&input).unwrap();
 	server.pool.stop();
+}
+
+#[test]
+fn a_checked_submission_does_not_run_after_the_registry_changes() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let input = dir.path().join("input.tar");
+	fs::write(&input, b"input bytes").unwrap();
+	let server = server(&state);
+	let registry = server.shared.registry();
+	let mut checked = submission(&input);
+	checked.params["config_revision"] = json!(registry.revision());
+	let result = server.submit(&checked).unwrap();
+	assert!(result.ok, "{result:?}");
+	let id = JobId::parse(result.result.unwrap()["id"].as_str().unwrap()).unwrap();
+	let (_, work) = server.pool.cancel(&id);
+	let Kind::ConfiguredImmediate { request, revision } = work.unwrap().kind else {
+		panic!("missing config binding")
+	};
+	server.shared.reload_registry(
+		Registry::with_user("version = 'retype-config-1'\n[undo]\nenabled = false\n", "test").unwrap(),
+	);
+	immediate::run_matching(
+		&server.shared,
+		&request,
+		&id,
+		&retype_core::execute::Cancellation::default(),
+		Some(&revision),
+	);
+
+	let (_, replay) = Journal::open(&state.join("jobs.jsonl")).unwrap();
+	assert_eq!(replay.jobs[0].state, JobState::Failed);
+	assert_eq!(
+		replay.jobs[0].error.as_ref().unwrap().code,
+		Code::CfgValidation.to_string()
+	);
+	assert_eq!(fs::read(&input).unwrap(), b"input bytes");
+	assert!(!input.with_extension("zip").exists());
+	assert!(retype_core::undo::Store::open(&state).load(&id).unwrap().is_none());
 }
 
 #[cfg(not(windows))]

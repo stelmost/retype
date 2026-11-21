@@ -277,15 +277,18 @@ pub fn work(job: &Job, intent: Option<&str>, force: bool) -> Option<Work> {
 			intent,
 			force,
 		},
-		false => Kind::Immediate(immediate::Request {
-			input: job.source.path.clone(),
-			intent,
-			output: match job.outputs.as_slice() {
-				[single] => Some(single.path.to_string_lossy().into_owned()),
-				_ => None,
+		false => Kind::submission(
+			immediate::Request {
+				input: job.source.path.clone(),
+				intent,
+				output: match job.outputs.as_slice() {
+					[single] => Some(single.path.to_string_lossy().into_owned()),
+					_ => None,
+				},
+				force,
 			},
-			force,
-		}),
+			parked.config_revision.as_deref(),
+		),
 	};
 
 	Some(Work {

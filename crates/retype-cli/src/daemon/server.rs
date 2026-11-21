@@ -438,8 +438,19 @@ impl Server {
 				.unwrap_or(false),
 		};
 
+		let registry = self.shared.registry();
+		let config_revision = request.params.get("config_revision");
+		if config_revision.is_some_and(|value| value.as_str() != Some(registry.revision())) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::CfgValidation,
+					"the daemon is using a different configuration; restart it with the selected config or use a different state directory",
+				),
+			));
+		}
 		// Only declarations and path checks run here; probes and hashing belong to the worker.
-		let prepared = match immediate::declare(&self.shared.registry(), &asked) {
+		let prepared = match immediate::declare(&registry, &asked) {
 			Ok(prepared) => prepared,
 			Err(problems) => return Ok(Response::error(request.id, wire_problems(&problems))),
 		};
@@ -471,7 +482,7 @@ impl Server {
 				),
 			));
 		}
-		let mut job = immediate::queued(&self.shared, &prepared, &id);
+		let mut job = immediate::queued(&self.shared, &registry, &prepared, &id);
 		job.admission = match retype_core::safety::InputStamp::of(&job.source.path) {
 			Ok(stamp) => Some(stamp),
 			Err(error) => {
@@ -484,7 +495,7 @@ impl Server {
 
 		let work = crate::daemon::queue::Work {
 			id: id.clone(),
-			kind: crate::daemon::queue::Kind::Immediate(asked),
+			kind: crate::daemon::queue::Kind::submission(asked, config_revision.and_then(serde_json::Value::as_str)),
 		};
 
 		match self
@@ -1415,6 +1426,7 @@ impl Server {
 				"events".to_string(),
 				"jobs.list.summary".to_string(),
 				"jobs.submit.id".to_string(),
+				"jobs.submit.config".to_string(),
 				"jobs.list.pagination".to_string(),
 				"undo.list".to_string(),
 				"recovery".to_string(),

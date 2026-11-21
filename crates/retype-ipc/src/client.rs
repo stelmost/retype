@@ -165,19 +165,37 @@ impl Client {
 
 	/// Receive a durable request handle; source.fingerprint in jobs.get marks content acceptance.
 	pub fn jobs_submit(&mut self, request: &crate::JobSubmit) -> Result<crate::JobSubmitted, ClientError> {
+		self.jobs_submit_matching(request, None)
+	}
+
+	pub fn jobs_submit_matching(
+		&mut self,
+		request: &crate::JobSubmit,
+		config_revision: Option<&str>,
+	) -> Result<crate::JobSubmitted, ClientError> {
+		let supports = |required: &str| {
+			self.daemon
+				.as_ref()
+				.is_some_and(|daemon| daemon.features.iter().any(|feature| feature == required))
+		};
+		if config_revision.is_some() && !supports("jobs.submit.config") {
+			return Err(ClientError::Rpc(Box::new(WireError::new(
+				Code::CfgValidation,
+				"the daemon cannot verify the selected config; restart it with this build and config",
+			))));
+		}
 		let mut request = request.clone();
 		request.input = local_path(&request.input)?;
 		request.output = request.output.as_deref().map(local_path).transpose()?;
-		if !self
-			.daemon
-			.as_ref()
-			.is_some_and(|daemon| daemon.features.iter().any(|feature| feature == "jobs.submit.id"))
-		{
+		if config_revision.is_none() && !supports("jobs.submit.id") {
 			return self.typed("jobs.submit", request);
 		}
 		let id = retype_core::job::JobId::now().map_err(|error| ClientError::Protocol(error.to_string()))?;
 		let mut params = serde_json::to_value(request).map_err(|error| ClientError::Protocol(error.to_string()))?;
 		params["job_id"] = serde_json::json!(id);
+		if let Some(revision) = config_revision {
+			params["config_revision"] = serde_json::json!(revision);
+		}
 		match self.typed("jobs.submit", params) {
 			Ok(submitted) => Ok(submitted),
 			Err(error @ ClientError::Rpc(_)) => Err(error),
