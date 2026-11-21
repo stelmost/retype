@@ -107,7 +107,7 @@ A parked `needs-attention` job and a repaired job say the same four things, so t
 - `corrected`, the intent that would run, when one exists
 - What could not be carried, in the tool's own words, with the span of the token
 
-A repaired job adds what it dropped and reaches the user through the same notification as an ordinary job, with Undo available. The undo removes the result, so a guess the user disagrees with costs one click.
+A repaired job adds what it dropped and uses the same notification as an ordinary job. On Linux, **Review** can offer **Undo** when the full affected scope is available.
 
 ## 7. The timer
 

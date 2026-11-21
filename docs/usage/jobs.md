@@ -65,7 +65,7 @@ The settings are host-level in configuration; a folder cannot set them, so a rep
 
 Unexpired records are not automatically evicted. By default, a job admitted below the goal keeps its backup even if it crosses the goal. Subsequent work waits visibly with reason `storage` until capacity becomes available. `stop-before` holds a job that would exceed the goal. A deliberate `on_overflow = 'skip'` keeps the original visible and omits the new record when it cannot fit; `ask` and legacy `evict` never authorize that downgrade. Interactive early-eviction prompts are not implemented. An error creating an input snapshot or undo record stops the job before conversion and is reported. A recognized storage-exhaustion error or a failed output recovery checkpoint stops the remaining outputs; completed outputs are kept. If the final state cannot be journalled, live status says it is not durable. External tools do not always provide a machine-readable cause, so an encoder's disk-full failure may be reported as a general tool failure.
 
-Undo is also the button on the notification a watched folder produces, and it reverses every job of that batch that has a record. [Watching a folder](watch.md) describes the batching that makes it one notification.
+The Linux notification's **Review** button opens a dialog without changing any files. It offers **Undo** only when all affected files can be reviewed and have usable recovery. [Watching a folder](watch.md) describes notification batching.
 
 ## Recovery operations and protected reservations
 

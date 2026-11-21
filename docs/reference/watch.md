@@ -133,12 +133,16 @@ Capability is a property of the platform, in three tiers:
 
 | Tier | How | Where |
 |---|---|---|
-| Actions | `notify-send --wait --action` | Linux, with a session bus and a libnotify build that has actions |
+| Review | `notify-send --wait --action`, then Zenity | Linux, with notification actions, a graphical session and optional `zenity` on the daemon's `PATH` |
 | Plain | `notify-send` | Linux, with a session bus |
-| Plain, macOS | `osascript` | macOS until the signed notifier bundle exists |
+| Plain, macOS | the installed notifier, or `osascript` in source builds | macOS |
 | Plain, Windows | a toast through `powershell.exe` | Windows, with the AppUserModelID the script registers under the user's own hive |
 | Log | a line on the daemon's own stderr | no session, or no notifier |
 
 The tier is decided once at startup, because the session is either there or it is not. A daemon with no notifier still converts: the tier is about being told, never about the work.
 
-Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The CLI handles `retype://job/<id>` undo, cancel and resolve. The Windows toast needs no bundle: the script registers `com.lapilliworks.retype.cli` under `HKCU\Software\Classes\AppUserModelId` and falls back to PowerShell's own identifier when the shell refuses that one. Buttons on Windows, and the macOS User Notifications centre, need the signed notifier bundle, which is not built yet.
+**Review** opens a native dialog without changing any files. **Close** is the default. The dialog repeats the batch summary and offers **Undo** only when it can show every affected original and output path and the completed conversions have eligible retained recovery records. Failed jobs with no completed output are reported but are not undone. Undo for multiple conversions shows the count. A failed conversion on its own, unavailable or unfinished recovery, and scopes too large to show get only **Close**. The dialog times out after about a minute.
+
+Review checks recovery records and file metadata, not contents. After explicit approval, the daemon refuses changed records and runs the usual checked restoration, which removes only matching outputs. Review does not use a URI handler.
+
+A Linux notification session without Zenity or a graphical display still gets plain notifications. Windows and macOS notifications remain plain. The Windows toast registers `com.lapilliworks.retype.cli` under `HKCU\Software\Classes\AppUserModelId` and falls back to PowerShell's identifier if needed.
