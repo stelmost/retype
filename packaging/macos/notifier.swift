@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import CoreGraphics
 import CoreServices
 import UserNotifications
 
@@ -73,18 +74,37 @@ func openURI(_ uri: String, finished: @escaping (Process) -> Void) throws -> Pro
 	return process
 }
 
-final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
-	func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
-		withCompletionHandler completion: @escaping (UNNotificationPresentationOptions) -> Void) {
-		completion([.banner, .list])
+enum ReviewNotification {
+	static let categoryID = "retype.job-review"
+	static let actionID = "retype.job-review.open"
+	static let uriKey = "retype.job-review.uri"
+
+	static func isCanonicalURI(_ uri: String) -> Bool {
+		return uri.utf8.count == 39 &&
+			uri.range(of: #"\Aretype://job/[0-7][0-9abcdefghjkmnpqrstvwxyz]{25}\z"#, options: .regularExpression) != nil
 	}
 }
 
-func sendNotification(_ title: String, _ body: String) {
-	// Keep NSApplication and URL event handling out of notification-only workers.
+func hasActiveUserSession() -> Bool {
+	let uid = getuid()
+	guard uid != 0, uid == geteuid(),
+		let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+	return session[kCGSessionUserIDKey] as? UInt32 == uid &&
+		session[kCGSessionOnConsoleKey] as? Bool == true && session[kCGSessionLoginDoneKey] as? Bool == true
+}
+
+func requireActiveUserSession() {
+	guard hasActiveUserSession() else { fail("no active ordinary-user graphical session") }
+}
+
+func sendNotification(_ title: String, _ body: String, _ reviewURI: String?) {
+	guard title.utf8.count <= 128, body.utf8.count <= 8_192 else { fail("notification text is too long") }
+	if let reviewURI, !ReviewNotification.isCanonicalURI(reviewURI) {
+		fail("notify Review needs a canonical full-ID URI")
+	}
+	requireActiveUserSession()
+	// Only the app activation mode owns notification responses.
 	let center = UNUserNotificationCenter.current()
-	let delegate = NotificationDelegate()
-	center.delegate = delegate
 	let timer = Timer.scheduledTimer(withTimeInterval: 25, repeats: false) { _ in
 		fail("notification delivery or permission timed out")
 	}
@@ -94,16 +114,83 @@ func sendNotification(_ title: String, _ body: String) {
 		let content = UNMutableNotificationContent()
 		content.title = title
 		content.body = body
+		if let reviewURI {
+			let action = UNNotificationAction(identifier: ReviewNotification.actionID, title: "Review",
+				options: [.foreground, .authenticationRequired])
+			let category = UNNotificationCategory(identifier: ReviewNotification.categoryID, actions: [action],
+				intentIdentifiers: [], options: [])
+			center.setNotificationCategories([category])
+			content.categoryIdentifier = ReviewNotification.categoryID
+			content.userInfo = [ReviewNotification.uriKey: reviewURI]
+		}
 		let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
 		center.add(request) { error in
 			if let error = error { fail("notification failed: \(error.localizedDescription)") }
 			exit(0)
 		}
 	}
-	withExtendedLifetime((delegate, timer)) { RunLoop.main.run() }
+	withExtendedLifetime(timer) { RunLoop.main.run() }
 }
 
-final class URLDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+func reviewDecision(_ text: String, _ undoLabel: String?) -> Int32 {
+	guard !text.isEmpty, text.utf8.count <= 4_096 else { fail("invalid Review text length") }
+	if let undoLabel {
+		guard undoLabel.utf8.count <= 80, undoLabel == "Undo" || undoLabel.hasPrefix("Undo "),
+			!undoLabel.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
+			fail("invalid Undo button label")
+		}
+	}
+	requireActiveUserSession()
+	let application = NSApplication.shared
+	guard application.setActivationPolicy(.accessory) else { fail("cannot open the Review window") }
+	application.finishLaunching()
+
+	let alert = NSAlert()
+	alert.messageText = "retype Review"
+	alert.addButton(withTitle: "Close").keyEquivalent = "\r"
+	if let undoLabel { alert.addButton(withTitle: undoLabel).keyEquivalent = "" }
+
+	// Wrap the literal snapshot. Do not offer Undo for a clipped list of files.
+	let summary = NSTextField(wrappingLabelWithString: text)
+	summary.maximumNumberOfLines = 0
+	summary.lineBreakMode = .byCharWrapping
+	summary.preferredMaxLayoutWidth = 500
+	let height = ceil(summary.intrinsicContentSize.height)
+	guard height > 0 else { fail("cannot lay out Review text") }
+	summary.frame.size = NSSize(width: summary.preferredMaxLayoutWidth, height: height)
+	alert.accessoryView = summary
+	alert.layout()
+	guard let screen = alert.window.screen ?? NSScreen.main,
+		summary.frame.width >= summary.preferredMaxLayoutWidth, summary.frame.height >= height,
+		alert.window.frame.width <= screen.visibleFrame.width,
+		alert.window.frame.height <= screen.visibleFrame.height else { fail("Review does not fit on screen") }
+
+	application.activate()
+	let dismissMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+		let key = event.charactersIgnoringModifiers
+		guard key == "\r" || key == "\u{1b}" else { return event }
+		MainActor.assumeIsolated { application.stopModal(withCode: .cancel) }
+		return nil
+	}
+	guard let dismissMonitor else { fail("cannot bind Review dismiss keys") }
+	let timeout: TimeInterval = 60
+	let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+	let timer = Timer(timeInterval: timeout, repeats: false) { _ in
+		MainActor.assumeIsolated { application.stopModal(withCode: .cancel) }
+	}
+	RunLoop.main.add(timer, forMode: .common)
+	defer {
+		timer.invalidate()
+		NSEvent.removeMonitor(dismissMonitor)
+	}
+	guard alert.runModal() == .alertSecondButtonReturn, undoLabel != nil,
+		ContinuousClock.now < deadline else { return 0 }
+	requireActiveUserSession()
+	return 42
+}
+
+final class URLDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
 	var children: [Process] = []
 
 	func applicationDidFinishLaunching(_ notification: Notification) {
@@ -115,12 +202,40 @@ final class URLDelegate: NSObject, NSApplicationDelegate {
 		if children.isEmpty { NSApp.terminate(nil) }
 	}
 
+	nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+		withCompletionHandler completion: @escaping (UNNotificationPresentationOptions) -> Void) {
+		completion([.banner, .list])
+	}
+
+	nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+		withCompletionHandler completion: @escaping () -> Void) {
+		let content = response.notification.request.content
+		guard response.actionIdentifier == ReviewNotification.actionID,
+			content.categoryIdentifier == ReviewNotification.categoryID, content.userInfo.count == 1,
+			let uri = content.userInfo[ReviewNotification.uriKey] as? String,
+			ReviewNotification.isCanonicalURI(uri) else {
+			completion()
+			return
+		}
+		DispatchQueue.main.async {
+			defer { completion() }
+			guard hasActiveUserSession() else {
+				NSLog("retype Review unavailable: no active ordinary-user graphical session")
+				return
+			}
+			self.dispatchURI(uri)
+		}
+	}
+
 	@objc func getURL(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
 		guard let uri = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue else {
 			NSLog("retype URL Apple Event has no URI")
-			terminateIfIdle()
 			return
 		}
+		dispatchURI(uri)
+	}
+
+	func dispatchURI(_ uri: String) {
 		do {
 			let child = try openURI(uri) { finished in
 				if finished.terminationStatus != 0 {
@@ -134,7 +249,6 @@ final class URLDelegate: NSObject, NSApplicationDelegate {
 			children.append(child)
 		} catch {
 			NSLog("retype cannot handle URL: %@", error.localizedDescription)
-			terminateIfIdle()
 		}
 	}
 }
@@ -178,16 +292,23 @@ case "uri":
 		withExtendedLifetime(child) { RunLoop.main.run() }
 	} catch { fail(error.localizedDescription) }
 case "notify":
-	guard arguments.count == 3 else { fail("notify needs a title and body") }
-	sendNotification(arguments[1], arguments[2])
+	guard arguments.count == 3 || arguments.count == 4 else { fail("notify needs a title, body and optional Review URI") }
+	let reviewURI = arguments.count == 4 ? arguments[3] : nil
+	sendNotification(arguments[1], arguments[2], reviewURI)
+case "review":
+	guard arguments.count == 2 || arguments.count == 3 else { fail("review needs text and an optional Undo label") }
+	let undoLabel = arguments.count == 3 ? arguments[2] : nil
+	exit(MainActor.assumeIsolated { reviewDecision(arguments[1], undoLabel) })
 case nil:
+	requireActiveUserSession()
 	let delegate = URLDelegate()
 	let application = NSApplication.shared
 	application.setActivationPolicy(.accessory)
 	application.delegate = delegate
+	UNUserNotificationCenter.current().delegate = delegate
 	NSAppleEventManager.shared().setEventHandler(delegate, andSelector: #selector(URLDelegate.getURL(_:withReplyEvent:)),
 		forEventClass: AEEventClass(kInternetEventClass), andEventID: AEEventID(kAEGetURL))
-	application.run()
+	withExtendedLifetime(delegate) { application.run() }
 default:
 	fail("unknown notifier argument")
 }
