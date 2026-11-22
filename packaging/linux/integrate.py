@@ -262,11 +262,15 @@ def stop_service(unit, journal, journal_path, manager, prefix):
 
 
 def selected_state():
-	explicit = os.environ.get('RETYPE_STATE_DIR')
-	if explicit:
-		return Path(explicit)
+	if 'RETYPE_STATE_DIR' in os.environ:
+		return Path(os.environ['RETYPE_STATE_DIR'])
 	state = Path(os.environ.get('XDG_STATE_HOME', ''))
-	return (state if state.is_absolute() else Path.home() / '.local/state') / 'retype'
+	if state.is_absolute():
+		return state / 'retype'
+	if 'HOME' in os.environ:
+		return Path(os.environ['HOME']) / '.local/state/retype'
+	data = Path(os.environ.get('XDG_DATA_HOME', ''))
+	return data / 'retype' if data.is_absolute() else None
 
 
 def locked_daemon(state):
@@ -318,7 +322,10 @@ def request_drain(state, pid):
 
 
 def stop_detached(prefix):
-	state = selected_state().resolve()
+	state = selected_state()
+	if state is None:
+		return
+	state = state.resolve()
 	pid = locked_daemon(state)
 	if pid is None:
 		return
