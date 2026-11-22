@@ -293,6 +293,11 @@ pub enum Room {
 	NoRoom(NoRoom),
 }
 
+enum RoomPlan {
+	Ready { evictions: Vec<JobLease> },
+	Blocked(NoRoom),
+}
+
 /// Why a record cannot be kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoRoom {
@@ -425,11 +430,10 @@ impl Store {
 		}
 		let bytes = subject.bytes.clone();
 		let expected = Fingerprint::of_cancellable(&bytes, cancellation)?;
-		let (record, dropped) = {
+		let (record, evictions) = {
 			let _guard = store_lock(&self.root)?;
-			cancellation.commit(|| Ok(()))?;
-			let room = self.room_for_locked(fs::metadata(&bytes)?.len(), policy)?;
-			let Room::Kept { dropped } = room else {
+			cancellation.check()?;
+			let RoomPlan::Ready { evictions } = self.plan_room_locked(expected.bytes, policy)? else {
 				if policy.on_overflow == Overflow::Skip {
 					return Ok(None);
 				}
@@ -439,29 +443,23 @@ impl Store {
 				)
 				.into());
 			};
-			(self.reserve(subject, Some(expected))?, dropped)
+			(self.reserve(subject, Some(expected))?, evictions)
 		};
 		let record = self.complete(record, &bytes, cancellation)?;
 		let _guard = store_lock(&self.root)?;
-		for id in dropped {
-			let _lease = match self.lease(&id) {
-				Ok(lease) => lease,
-				Err(error) if error.code() == Code::IoLocked => continue,
-				Err(error) => return Err(error),
-			};
-			// A concurrent resume can restart retention while the new backup is copied.
-			if self.load(&id)?.is_some_and(|record| {
-				!record.pinned && age(&record, SystemTime::now()).is_some_and(|age| age > policy.retention)
-			}) {
-				self.remove_locked(&id)?;
-			}
-		}
+		self.evict_planned_locked(evictions, policy)?;
 		Ok(Some(record))
 	}
 
 	fn reserve(&self, subject: Subject, expected: Option<Fingerprint>) -> Result<Record> {
 		let input = open_undo_backup(&subject.bytes)?;
 		let metadata = input.metadata()?;
+		if expected
+			.as_ref()
+			.is_some_and(|expected| metadata.len() != expected.bytes)
+		{
+			return Err(std::io::Error::other("original size changed before backup reservation").into());
+		}
 		let modified = mtime_ns(&metadata)?;
 		let attributes = crate::xattr::fingerprint(&input)?;
 		crate::fsx::create_dir_all_durable(&self.root)?;
@@ -713,37 +711,59 @@ impl Store {
 	/// enough, no record is dropped for a job that will not receive a backup.
 	pub fn make_room(&self, path: &Path, policy: &Policy) -> Result<Room> {
 		let _guard = store_lock(&self.root)?;
-		let room = self.room_for_locked(fs::metadata(path)?.len(), policy)?;
-
-		if let Room::Kept { dropped } = &room {
-			for id in dropped {
-				let _lease = self.lease(id)?;
-				self.remove_locked(id)?;
-			}
+		match self.plan_room_locked(fs::metadata(path)?.len(), policy)? {
+			RoomPlan::Ready { evictions } => Ok(Room::Kept {
+				dropped: self.evict_planned_locked(evictions, policy)?,
+			}),
+			RoomPlan::Blocked(reason) => Ok(Room::NoRoom(reason)),
 		}
-
-		Ok(room)
 	}
 
-	/// The same answer without changing anything, which is what a decision about a job
-	/// needs: whether a record could be kept if it came to that, `docs/deferral.md`
-	/// §3.
+	fn evict_planned_locked(&self, evictions: Vec<JobLease>, policy: &Policy) -> Result<Vec<JobId>> {
+		let mut dropped = Vec::with_capacity(evictions.len());
+		for lease in evictions {
+			if self.load(&lease.id)?.is_some_and(|record| {
+				record.pinned || !age(&record, SystemTime::now()).is_some_and(|age| age > policy.retention)
+			}) {
+				return Err(
+					std::io::Error::other("undo expiry changed during backup; new recovery remains pinned").into(),
+				);
+			}
+			self.remove_locked(&lease.id)?;
+			dropped.push(lease.id.clone());
+		}
+		Ok(dropped)
+	}
+
+	/// Estimate whether a record fits without evicting or reserving any bytes.
 	pub fn room_for(&self, wanted: u64, policy: &Policy) -> Result<Room> {
 		let _guard = store_lock(&self.root)?;
-		self.room_for_locked(wanted, policy)
+		match self.plan_room_locked(wanted, policy)? {
+			RoomPlan::Ready { evictions } => Ok(Room::Kept {
+				dropped: evictions.iter().map(|lease| lease.id.clone()).collect(),
+			}),
+			RoomPlan::Blocked(reason) => Ok(Room::NoRoom(reason)),
+		}
 	}
 
-	fn room_for_locked(&self, wanted: u64, policy: &Policy) -> Result<Room> {
+	/// Only one reservation may count the same expired bytes as reclaimable.
+	fn plan_room_locked(&self, wanted: u64, policy: &Policy) -> Result<RoomPlan> {
 		let now = SystemTime::now();
-		let mut dropped = Vec::new();
+		let mut evictions = Vec::new();
 		let mut held: u64 = 0;
 
 		for record in self.list()? {
 			if !record.pinned && age(&record, now).is_some_and(|age| age > policy.retention) {
-				dropped.push(record.id);
-			} else {
-				held = held.saturating_add(record.source_size);
+				match self.lease(&record.id) {
+					Ok(lease) => {
+						evictions.push(lease);
+						continue;
+					}
+					Err(error) if error.code() == Code::IoLocked => {}
+					Err(error) => return Err(error),
+				}
 			}
+			held = held.saturating_add(record.source_size);
 		}
 
 		let fits = if policy.admission == Admission::StopAfter && policy.on_overflow != Overflow::Skip {
@@ -752,14 +772,14 @@ impl Store {
 			held.saturating_add(wanted) <= policy.quota
 		};
 		if fits {
-			return Ok(Room::Kept { dropped });
+			return Ok(RoomPlan::Ready { evictions });
 		}
 
 		if wanted > policy.quota {
-			return Ok(Room::NoRoom(NoRoom::TooLarge));
+			return Ok(RoomPlan::Blocked(NoRoom::TooLarge));
 		}
 
-		Ok(Room::NoRoom(NoRoom::Policy))
+		Ok(RoomPlan::Blocked(NoRoom::Policy))
 	}
 
 	/// Write the output's identity before publication. Recovery verifies it at the final path.
@@ -775,14 +795,26 @@ impl Store {
 		staged: &Path,
 		validated: Option<&Fingerprint>,
 	) -> Result<()> {
-		let _guard = store_lock(&self.root)?;
-		let fingerprint = Fingerprint::of(staged)?;
+		self.prepare_checked_output_cancellable(id, output, staged, validated, &crate::execute::Cancellation::default())
+	}
+
+	fn prepare_checked_output_cancellable(
+		&self,
+		id: &JobId,
+		output: crate::job::Output,
+		staged: &Path,
+		validated: Option<&Fingerprint>,
+		cancellation: &crate::execute::Cancellation,
+	) -> Result<()> {
+		let fingerprint = Fingerprint::of_cancellable(staged, cancellation)?;
 		if validated.is_some_and(|expected| !expected.same_file_and_content(&fingerprint)) {
 			return Err(Error::Io(std::io::Error::other(format!(
 				"{} changed after output validation; original retained",
 				staged.display()
 			))));
 		}
+		let _guard = store_lock(&self.root)?;
+		cancellation.check()?;
 		let mut record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
@@ -1264,9 +1296,10 @@ impl RetainedRecovery<'_> {
 		output: crate::job::Output,
 		staged: &Path,
 		validated: Option<&Fingerprint>,
+		cancellation: &crate::execute::Cancellation,
 	) -> Result<()> {
 		self.store
-			.prepare_checked_output(&self.record.id, output, staged, validated)
+			.prepare_checked_output_cancellable(&self.record.id, output, staged, validated, cancellation)
 	}
 
 	pub fn guard_disposal(&self, outputs: &[crate::job::Output]) -> Result<DisposalGuard> {
@@ -2176,6 +2209,61 @@ mod tests {
 		assert!(
 			store.load(&old.id).unwrap().is_some(),
 			"leased recovery must remain untouched"
+		);
+	}
+
+	#[test]
+	fn expired_but_leased_bytes_still_count_against_the_goal() {
+		let state = state();
+		let store = Store::open(state.path());
+		let mut old = store.save(sized(1, state.path(), 400)).unwrap();
+		backdate(&store, &mut old, 8);
+		let lease = store.lease(&old.id).unwrap();
+		let mut before = policy(500);
+		before.admission = Admission::StopBefore;
+		assert_eq!(store.room_for(150, &before).unwrap(), Room::NoRoom(NoRoom::Policy));
+		let after = policy(500);
+		store
+			.save_with_policy(sized(2, state.path(), 150), &after)
+			.unwrap()
+			.unwrap();
+		assert_eq!(store.usage(&after).unwrap().overage, 50);
+		assert_eq!(
+			store
+				.save_with_policy(sized(3, state.path(), 25), &after)
+				.unwrap_err()
+				.code(),
+			Code::UndoLimit
+		);
+		assert!(store.load(&old.id).unwrap().is_some());
+		drop(lease);
+		assert!(
+			store
+				.save_with_policy(sized(4, state.path(), 25), &after)
+				.unwrap()
+				.is_some()
+		);
+		assert!(store.load(&old.id).unwrap().is_none());
+	}
+
+	#[test]
+	fn concurrent_reservations_cannot_reuse_the_same_pending_eviction() {
+		let state = state();
+		let store = Store::open(state.path());
+		let mut old = store.save(sized(1, state.path(), 400)).unwrap();
+		backdate(&store, &mut old, 8);
+		let mut policy = policy(500);
+		policy.admission = Admission::StopBefore;
+		let plan = {
+			let _guard = store_lock(&store.root).unwrap();
+			store.plan_room_locked(150, &policy).unwrap()
+		};
+		assert!(matches!(plan, RoomPlan::Ready { .. }));
+		assert_eq!(store.room_for(150, &policy).unwrap(), Room::NoRoom(NoRoom::Policy));
+		drop(plan);
+		assert_eq!(
+			store.room_for(150, &policy).unwrap(),
+			Room::Kept { dropped: vec![old.id] }
 		);
 	}
 

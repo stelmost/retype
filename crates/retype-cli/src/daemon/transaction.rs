@@ -103,7 +103,7 @@ impl OutputTransaction<'_> {
 		let checkpoint = Cell::new(CheckpointStatus::NotRecorded);
 		let record = |stage: CheckedOutput| {
 			stage.checkpoint(|staged, report| {
-				let result = self.checkpoint(staged, report, plan, output);
+				let result = self.checkpoint(staged, report, plan, output, cancellation);
 				checkpoint.set(if result.is_ok() {
 					CheckpointStatus::Recorded
 				} else {
@@ -120,7 +120,14 @@ impl OutputTransaction<'_> {
 		)
 	}
 
-	fn checkpoint(&self, staged: &Path, report: &Report, plan: &Plan, output: &Path) -> Result<()> {
+	fn checkpoint(
+		&self,
+		staged: &Path,
+		report: &Report,
+		plan: &Plan,
+		output: &Path,
+		cancellation: &Cancellation,
+	) -> Result<()> {
 		if retype_core::fsx::protects_input(self.original, &report.output)? {
 			return Err(Error::Exists(report.output.clone()));
 		}
@@ -132,7 +139,7 @@ impl OutputTransaction<'_> {
 			if recovery.record_snapshot().id != self.job.id {
 				return Err(std::io::Error::other("output checkpoint belongs to another recovery job").into());
 			}
-			recovery.prepare_output(produced.clone(), staged, report.validation.fingerprint())?;
+			recovery.prepare_output(produced.clone(), staged, report.validation.fingerprint(), cancellation)?;
 		}
 		let mut checkpoint = self.job.clone();
 		checkpoint.state = JobState::Running;

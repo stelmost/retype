@@ -73,17 +73,22 @@ impl Cancellation {
 		self.superseded.load(Ordering::Relaxed)
 	}
 
-	pub fn commit<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
-		let _guard = self
-			.commit_gate
-			.lock()
-			.map_err(|_| Error::Io(std::io::Error::other("commit lock poisoned")))?;
+	pub(crate) fn check(&self) -> Result<()> {
 		if self.is_cancelled() {
 			return Err(Error::Diagnostic(Diagnostic::global(
 				Code::JobCancelled,
 				"job was cancelled before commit",
 			)));
 		}
+		Ok(())
+	}
+
+	pub fn commit<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+		let _guard = self
+			.commit_gate
+			.lock()
+			.map_err(|_| Error::Io(std::io::Error::other("commit lock poisoned")))?;
+		self.check()?;
 		action()
 	}
 }
@@ -250,10 +255,12 @@ pub(crate) fn publish_output(
 	cancellation: &Cancellation,
 	checkpoint: &dyn Fn(CheckedOutput) -> Result<CheckpointedOutput>,
 ) -> std::result::Result<Report, PublicationFailure> {
+	cancellation.check()?;
 	let target = output.report.output.clone();
+	let output = checkpoint(output)?;
 	let mut progress = crate::convert::PublicationProgress::Private;
 	cancellation
-		.commit(|| checkpoint(output)?.publish(&mut progress))
+		.commit(|| output.publish(&mut progress))
 		.map_err(|error| PublicationFailure::at_progress(error, target, progress))
 }
 

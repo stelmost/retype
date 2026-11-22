@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use retype_cli::daemon::{Server, resume, watcher};
 use retype_core::convert::Publication;
+use retype_core::error::Code;
 use retype_core::execute::{self, Cancellation};
 use retype_core::job::{FileIdentity, Job, JobId, JobState, Output, OutputState, Source, Tier};
 use retype_core::registry::Registry;
@@ -907,7 +908,7 @@ fn cancellation_before_native_finalization_prevents_publication() {
 }
 
 #[test]
-fn cancellation_racing_a_commit_is_ordered_before_any_later_disposal() {
+fn cancellation_during_checkpoint_prevents_publication() {
 	let fixture = Fixture::new();
 	let source = fixture.path("bundle.tar");
 	archive(&source);
@@ -915,15 +916,13 @@ fn cancellation_racing_a_commit_is_ordered_before_any_later_disposal() {
 	let cancellation = Cancellation::default();
 	let token = cancellation.clone();
 	let (started, wait_for_start) = std::sync::mpsc::channel();
-	let (requested, wait_for_request) = std::sync::mpsc::channel();
 	let (completed, wait_for_completion) = std::sync::mpsc::channel();
 	let canceller = std::thread::spawn(move || {
 		wait_for_start.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-		requested.send(()).unwrap();
 		token.cancel();
 		completed.send(()).unwrap();
 	});
-	execute::run_recorded(
+	let error = execute::run_recorded(
 		&plans("zip")[0],
 		&source,
 		&output,
@@ -932,22 +931,16 @@ fn cancellation_racing_a_commit_is_ordered_before_any_later_disposal() {
 		Publication::Create,
 		&|_, _| {
 			started.send(()).unwrap();
-			wait_for_request
+			wait_for_completion
 				.recv_timeout(std::time::Duration::from_secs(5))
 				.unwrap();
-			assert_eq!(
-				wait_for_completion.recv_timeout(std::time::Duration::from_millis(100)),
-				Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-			);
 			Ok(())
 		},
 	)
-	.unwrap();
+	.unwrap_err();
 	canceller.join().unwrap();
-	assert!(cancellation.is_cancelled());
-	check_zip(&output);
-	let expected = retype_core::safety::Fingerprint::of(&source).unwrap();
-	assert!(cancellation.commit(|| remove_owned(&source, &expected)).is_err());
+	assert_eq!(error.code(), Code::JobCancelled);
+	assert!(!output.exists());
 	assert!(source.exists());
 }
 
