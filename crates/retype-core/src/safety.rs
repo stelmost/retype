@@ -10,6 +10,9 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 use crate::job::FileIdentity;
 
+#[cfg(any(test, windows))]
+#[path = "safety_streams.rs"]
+mod streams;
 #[cfg(windows)]
 #[path = "safety_windows.rs"]
 mod windows;
@@ -451,18 +454,62 @@ pub fn restore_owned_name(
 	windows::restore_owned_name(from, to, expected, note_rename)
 }
 
-/// Claim first, then verify. Never unlink an unchecked public pathname.
-/// Requires exclusive ownership: Unix renames do not revoke external writers' open handles.
-/// On any ambiguous restore, the claimed file remains in a persistent recovery directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamProtection {
+	NamedStreams,
+	InspectionUnavailable,
+}
+
+impl StreamProtection {
+	pub fn reason(self) -> &'static str {
+		match self {
+			Self::NamedStreams => "the file has named data streams that Retype does not copy",
+			Self::InspectionUnavailable => "Retype could not reliably inspect the file for named data streams",
+		}
+	}
+}
+
+/// Inspect the live original, not its independent copy, before recording a cleanup attempt.
+#[cfg(windows)]
+pub fn source_stream_protection(
+	path: &Path,
+	expected: &Fingerprint,
+	cancellation: &crate::execute::Cancellation,
+) -> Result<Option<StreamProtection>> {
+	windows::source_stream_protection(path, expected, cancellation)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Removal {
+	Removed,
+	/// The checked file remains at its original name.
+	Protected(StreamProtection),
+}
+
 pub fn remove_owned(path: &Path, expected: &Fingerprint) -> Result<()> {
 	remove_owned_cancellable(path, expected, &crate::execute::Cancellation::default())
 }
 
+/// A caller that requires removal, such as undo, must not treat protection as success.
 pub fn remove_owned_cancellable(
 	path: &Path,
 	expected: &Fingerprint,
 	cancellation: &crate::execute::Cancellation,
 ) -> Result<()> {
+	match remove_or_protect_streams(path, expected, cancellation)? {
+		Removal::Removed => Ok(()),
+		Removal::Protected(protection) => {
+			Err(io::Error::other(format!("cannot remove {}: {}", path.display(), protection.reason(),)).into())
+		}
+	}
+}
+
+/// Claim and verify the owned entry before unlinking. On an ambiguous restore, the claim remains for recovery.
+pub fn remove_or_protect_streams(
+	path: &Path,
+	expected: &Fingerprint,
+	cancellation: &crate::execute::Cancellation,
+) -> Result<Removal> {
 	cancellation.commit(|| Ok(()))?;
 	crate::fsx::require_durable_cleanup(path)?;
 	#[cfg(windows)]
@@ -471,7 +518,8 @@ pub fn remove_owned_cancellable(
 	}
 	#[cfg(not(windows))]
 	{
-		remove_owned_path(path, expected, cancellation)
+		remove_owned_path(path, expected, cancellation)?;
+		Ok(Removal::Removed)
 	}
 }
 

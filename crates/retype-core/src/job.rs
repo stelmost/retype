@@ -489,7 +489,10 @@ pub struct Cost {
 pub enum SourceDisposition {
 	/// Completion is durable, but disposal and its outcome may not be.
 	Pending,
-	Kept,
+	Kept {
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		reason: Option<String>,
+	},
 	Removed,
 	Retained {
 		reason: String,
@@ -816,6 +819,21 @@ mod tests {
 		assert_eq!(record["source_disposition"]["state"], "retained");
 		assert_eq!(record["source_disposition"]["reason"], "missing validator");
 		assert_eq!(serde_json::from_value::<Job>(record).unwrap(), job);
+	}
+
+	#[test]
+	fn a_kept_source_can_carry_a_reason_without_changing_its_state() {
+		let mut job = job();
+		for reason in [None, Some("the file has named data streams".to_string())] {
+			job.source_disposition = Some(SourceDisposition::Kept { reason: reason.clone() });
+			let record = job.to_record().unwrap();
+			assert_eq!(record["source_disposition"]["state"], "kept");
+			assert_eq!(
+				record["source_disposition"].get("reason").and_then(Value::as_str),
+				reason.as_deref()
+			);
+			assert_eq!(serde_json::from_value::<Job>(record).unwrap(), job);
+		}
 	}
 
 	#[test]

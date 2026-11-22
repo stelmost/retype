@@ -14,15 +14,31 @@ use windows_sys::Win32::Storage::FileSystem::{
 	FileDispositionInfoEx, SetFileInformationByHandle,
 };
 
-use super::Fingerprint;
+use super::{Fingerprint, Removal, StreamProtection, streams};
 use crate::error::{Error, Result};
 use crate::fsx::windows::Directory;
+
+pub(super) fn source_stream_protection(
+	path: &Path,
+	expected: &Fingerprint,
+	cancellation: &crate::execute::Cancellation,
+) -> Result<Option<StreamProtection>> {
+	let mut file = super::regular_file(path)?;
+	let Some(protection) = streams::inspect(&file) else {
+		return Ok(None);
+	};
+	let actual = Fingerprint::of_open_file_cancellable(path, &mut file, cancellation)?;
+	if !expected.same_file_and_content(&actual) || !path_matches_open_file(path, &file)? {
+		return Err(io::Error::other("the live original changed before stream inspection could be verified").into());
+	}
+	Ok(Some(protection))
+}
 
 pub(super) fn remove_owned(
 	path: &Path,
 	expected: &Fingerprint,
 	cancellation: &crate::execute::Cancellation,
-) -> Result<()> {
+) -> Result<Removal> {
 	let absolute = std::path::absolute(path)?;
 	let parent_path = absolute
 		.parent()
@@ -33,6 +49,9 @@ pub(super) fn remove_owned(
 	let actual = Fingerprint::of_open_file_cancellable(&path, &mut file, cancellation)?;
 	if !expected.same_file_and_content(&actual) || !actual.matches_cancellable(&path, cancellation)? {
 		return Err(Error::Exists(path));
+	}
+	if let Some(protection) = streams::inspect(&file) {
+		return Ok(Removal::Protected(protection));
 	}
 
 	let directory = tempfile::Builder::new()
@@ -69,8 +88,33 @@ pub(super) fn remove_owned(
 		)
 		.into());
 	}
-	/* Delete the object we checked, never a pathname that could select another file. */
-	cancellation.commit(|| Ok(remove_open(file)?))?;
+	/* Per-stream sharing requires a fresh check after claim; inspection and disposition are not atomic. */
+	let protected = cancellation.commit(|| {
+		if let Some(protection) = streams::inspect(&file) {
+			return Ok(Some((file, protection)));
+		}
+		remove_open(file)?;
+		Ok(None)
+	})?;
+	if let Some((file, protection)) = protected {
+		crate::fsx::rename_open(&file, &path, crate::convert::Publication::Create).map_err(|error| {
+			io::Error::new(
+				error.kind(),
+				format!(
+					"{}; cannot restore {}; check {}: {error}",
+					protection.reason(),
+					path.display(),
+					claimed.display()
+				),
+			)
+		})?;
+		if !path_matches_open_file(&path, &file)? {
+			return Err(io::Error::other("cannot verify the protected original after restoring its name").into());
+		}
+		file.sync_all()?;
+		retire_claim_directory(&parent, held_directory, &directory)?;
+		return Ok(Removal::Protected(protection));
+	}
 	if claimed.try_exists()? {
 		return Err(io::Error::other("claimed file is still visible after handle-owned deletion").into());
 	}
@@ -78,13 +122,17 @@ pub(super) fn remove_owned(
 	crate::durability_tests::checkpoint("cleanup.unlinked")?;
 	#[cfg(feature = "test-checkpoints")]
 	crate::test_checkpoints::checkpoint("cleanup.unlinked", &path)?;
-	held_directory.sync()?;
-	drop(held_directory);
-	fs::remove_dir(&directory)?;
-	parent.sync()?;
+	retire_claim_directory(&parent, held_directory, &directory)?;
 	#[cfg(test)]
 	crate::durability_tests::checkpoint("cleanup.complete")?;
-	Ok(())
+	Ok(Removal::Removed)
+}
+
+fn retire_claim_directory(parent: &Directory, held: Directory, directory: &Path) -> io::Result<()> {
+	held.sync()?;
+	drop(held);
+	fs::remove_dir(directory)?;
+	parent.sync()
 }
 
 pub(super) fn restore_owned_name(
@@ -248,7 +296,10 @@ mod tests {
 		let restored = restore_owned_name(&from, &to, &expected, |_, _| {}).unwrap();
 		assert!(!from.exists());
 		assert!(restored.matches(&to).unwrap());
-		remove_owned(&to, &restored, &crate::execute::Cancellation::default()).unwrap();
+		assert_eq!(
+			remove_owned(&to, &restored, &crate::execute::Cancellation::default()).unwrap(),
+			Removal::Removed
+		);
 		assert!(!to.exists());
 		assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
 	}

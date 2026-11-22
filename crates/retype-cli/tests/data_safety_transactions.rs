@@ -297,6 +297,124 @@ fn a_direct_native_conversion_and_undo_use_the_watched_disposition() {
 	}
 }
 
+#[cfg(windows)]
+fn stream_path(file: &Path, name: &str) -> PathBuf {
+	let mut path = file.as_os_str().to_os_string();
+	path.push(":");
+	path.push(name);
+	path.into()
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_conversion_keeps_empty_and_zone_streams_as_final_done_outcomes() {
+	use retype_core::job::SourceDisposition;
+	use retype_core::safety::{Fingerprint, StreamProtection};
+
+	for (name, contents, watched) in [
+		("empty", &b""[..], false),
+		("Zone.Identifier", &b"[ZoneTransfer]\r\nZoneId=3\r\n"[..], true),
+	] {
+		let dir = tempfile::tempdir().unwrap();
+		let state = dir.path().join("state");
+		let server = Server::open(&state).unwrap();
+		server.pool().stop();
+		let shared = server.shared();
+		shared.reload_registry(Registry::load(CONFIG).unwrap());
+		let source = dir.path().join("bundle.tar");
+		let output = dir.path().join("bundle.zip");
+		let original_path = if watched { &output } else { &source };
+		archive(original_path);
+		fs::write(stream_path(original_path, name), contents).expect("requires an NTFS fixture");
+		let original = Fingerprint::of(original_path).unwrap();
+		let id = JobId::now().unwrap();
+		if watched {
+			watcher::convert(
+				&shared,
+				dir.path(),
+				&output,
+				&source,
+				&output,
+				&id,
+				&Cancellation::default(),
+			);
+		} else {
+			let request = retype_cli::daemon::immediate::Request {
+				input: source.clone(),
+				intent: "zip".to_string(),
+				output: None,
+				force: false,
+			};
+			retype_cli::daemon::immediate::run(&shared, &request, &id, &Cancellation::default());
+		}
+		let job = shared
+			.jobs
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|job| job.id == id)
+			.unwrap()
+			.clone();
+		assert_eq!(job.state, JobState::Done);
+		assert!(job.error.is_none());
+		assert_eq!(
+			job.source_disposition,
+			Some(SourceDisposition::Kept {
+				reason: Some(StreamProtection::NamedStreams.reason().to_string()),
+			})
+		);
+		assert!(retype_cli::output::job_failure(&job).is_none());
+		assert!(retype_cli::output::source_disposition_warning(&job).is_none());
+		assert!(original.same_content(&Fingerprint::of(&source).unwrap()));
+		if !watched {
+			assert!(original.matches(&source).unwrap());
+		}
+		assert_eq!(fs::read(stream_path(&source, name)).unwrap(), contents);
+		check_zip(&output);
+		let undo = Store::open(&state).load(&id).unwrap().unwrap();
+		assert!(!undo.pinned && undo.retention_started.is_some());
+		drop(shared);
+		drop(server);
+
+		let journal = state.join("jobs.jsonl");
+		let before = fs::read_to_string(&journal).unwrap();
+		assert!(before.lines().all(|line| {
+			let record: serde_json::Value = serde_json::from_str(line).unwrap();
+			record["source_disposition"]["state"] != "pending"
+		}));
+		let restarted = Server::open(&state).unwrap();
+		restarted.recoveries().wait();
+		restarted.pool().stop();
+		assert_eq!(*restarted.shared().jobs.lock().unwrap(), [job]);
+		assert_eq!(fs::read_to_string(journal).unwrap(), before);
+		assert_eq!(fs::read(stream_path(&source, name)).unwrap(), contents);
+	}
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_undo_refuses_to_remove_an_output_with_a_named_stream() {
+	let fixture = Fixture::new();
+	let id = JobId::now().unwrap();
+	let job = fixture.convert("zip+keep", &id);
+	assert_eq!(job.state, JobState::Done);
+	let source = fixture.path("bundle.tar");
+	let output = fixture.path("bundle.zip");
+	let stream = stream_path(&output, "user-notes");
+	let original = fs::read(&source).unwrap();
+	let expected = retype_core::safety::Fingerprint::of(&output).unwrap();
+	fs::write(&stream, b"edited after conversion").expect("requires an NTFS fixture");
+
+	let store = fixture.store();
+	let error = store.restore(&id).unwrap_err().to_string();
+	assert!(error.contains("named data streams"), "{error}");
+	assert!(expected.matches(&output).unwrap());
+	assert_eq!(fs::read(stream).unwrap(), b"edited after conversion");
+	assert_eq!(fs::read(source).unwrap(), original);
+	let recovery = store.load(&id).unwrap().unwrap();
+	assert!(recovery.pinned && recovery.undo_progress.is_some());
+}
+
 #[test]
 fn a_direct_conversion_without_an_undo_record_reports_the_retained_source() {
 	let fixture = Fixture::new();
@@ -497,7 +615,10 @@ fn a_watched_keep_undo_leaves_later_source_edits_alone() {
 	let fixture = Fixture::new();
 	let job = fixture.convert("zip+keep", &JobId::now().unwrap());
 	assert_eq!(job.state, JobState::Done);
-	assert_eq!(job.source_disposition, Some(retype_core::job::SourceDisposition::Kept));
+	assert_eq!(
+		job.source_disposition,
+		Some(retype_core::job::SourceDisposition::Kept { reason: None })
+	);
 	let source = fixture.path("bundle.tar");
 	fs::write(&source, b"later edit").unwrap();
 	let restored = fixture.store().restore(&job.id);

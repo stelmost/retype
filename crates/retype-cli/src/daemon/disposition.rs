@@ -6,7 +6,7 @@ use retype_core::error::Result;
 use retype_core::execute::Cancellation;
 use retype_core::job::{Job, JobState, SourceDisposition, now_ms};
 use retype_core::resolve::Resolved;
-use retype_core::safety::Fingerprint;
+use retype_core::safety::{Fingerprint, Removal, StreamProtection};
 use retype_core::undo::Recovery;
 
 use super::watcher::{Shared, persist};
@@ -60,12 +60,6 @@ impl DurableCompletion {
 		mut job: Job,
 		record: &mut impl FnMut(&Shared, &Job) -> Result<()>,
 	) -> std::result::Result<Self, CompletionFailure> {
-		if job.state != JobState::Done {
-			return Err(CompletionFailure {
-				job: Box::new(job),
-				error: std::io::Error::other("source disposition requires a completed job").into(),
-			});
-		}
 		job.source_disposition = Some(SourceDisposition::Pending);
 		if let Err(error) = record(shared, &job) {
 			return Err(CompletionFailure {
@@ -90,40 +84,49 @@ impl DurableCompletion {
 		cancellation: &Cancellation,
 		record: &mut impl FnMut(&Shared, &Job) -> Result<()>,
 	) -> std::result::Result<DispositionRecorded, CompletionFailure> {
-		let mut job = self.job;
-		let disposition = decide(&job, &completion, cancellation);
-		let settled = !matches!(&disposition, SourceDisposition::Unresolved { .. });
-		match &disposition {
-			SourceDisposition::Retained { reason } => eprintln!("retype: original retained: {reason}"),
-			SourceDisposition::Unresolved { reason } => eprintln!("retype: source disposition unresolved: {reason}"),
-			SourceDisposition::Pending | SourceDisposition::Kept | SourceDisposition::Removed => {}
-		}
-		job.source_disposition = Some(disposition);
-		job.updated = now_ms();
-		if let Err(error) = record(shared, &job) {
-			return Err(CompletionFailure {
-				job: Box::new(job),
-				error,
-			});
-		}
-		#[cfg(feature = "test-checkpoints")]
-		if let Err(error) = retype_core::test_checkpoints::checkpoint("disposition.recorded", &job.source.path) {
-			return Err(CompletionFailure {
-				job: Box::new(job),
-				error: error.into(),
-			});
-		}
-		if let Recovery::Retained(recovery) = completion.recovery {
-			if settled {
-				if let Err(error) = recovery.finish() {
-					eprintln!("retype: undo record remains pinned: {error}");
-				}
-			} else {
-				eprintln!("retype: undo record remains pinned: the original was not verified");
-			}
-		}
-		Ok(DispositionRecorded { job })
+		let disposition = decide(&self.job, &completion, cancellation);
+		record_outcome(shared, self.job, disposition, completion.recovery, record)
 	}
+}
+
+fn record_outcome(
+	shared: &Shared,
+	mut job: Job,
+	disposition: SourceDisposition,
+	recovery: Recovery<'_>,
+	record: &mut impl FnMut(&Shared, &Job) -> Result<()>,
+) -> std::result::Result<DispositionRecorded, CompletionFailure> {
+	let settled = !matches!(&disposition, SourceDisposition::Unresolved { .. });
+	match &disposition {
+		SourceDisposition::Retained { reason } => eprintln!("retype: original retained: {reason}"),
+		SourceDisposition::Unresolved { reason } => eprintln!("retype: source disposition unresolved: {reason}"),
+		SourceDisposition::Pending | SourceDisposition::Kept { .. } | SourceDisposition::Removed => {}
+	}
+	job.source_disposition = Some(disposition);
+	job.updated = now_ms();
+	if let Err(error) = record(shared, &job) {
+		return Err(CompletionFailure {
+			job: Box::new(job),
+			error,
+		});
+	}
+	#[cfg(feature = "test-checkpoints")]
+	if let Err(error) = retype_core::test_checkpoints::checkpoint("disposition.recorded", &job.source.path) {
+		return Err(CompletionFailure {
+			job: Box::new(job),
+			error: error.into(),
+		});
+	}
+	if let Recovery::Retained(recovery) = recovery {
+		if settled {
+			if let Err(error) = recovery.finish() {
+				eprintln!("retype: undo record remains pinned: {error}");
+			}
+		} else {
+			eprintln!("retype: undo record remains pinned: the original was not verified");
+		}
+	}
+	Ok(DispositionRecorded { job })
 }
 
 /// Transfer completion ownership through the durable checkpoint and source-disposition outcome.
@@ -149,7 +152,33 @@ fn finish_done_with(
 			error: std::io::Error::other("completion belongs to another recovery job").into(),
 		});
 	}
+	if job.state != JobState::Done {
+		return Err(CompletionFailure {
+			job: Box::new(job),
+			error: std::io::Error::other("source disposition requires a completed job").into(),
+		});
+	}
+	#[cfg(windows)]
+	if let (true, Source::Live { path, fingerprint }) = (job.consume_source, &completion.source) {
+		let disposition = match retype_core::safety::source_stream_protection(path, fingerprint, cancellation) {
+			Ok(Some(protection)) => Some(protected_source(protection)),
+			Ok(None) => None,
+			Err(_) if cancellation.is_cancelled() => None,
+			Err(error) => Some(SourceDisposition::Unresolved {
+				reason: format!("cannot verify {} after conversion: {error}", path.display()),
+			}),
+		};
+		if let Some(disposition) = disposition {
+			return record_outcome(shared, job, disposition, completion.recovery, &mut record);
+		}
+	}
 	DurableCompletion::record(shared, job, &mut record)?.settle(shared, completion, cancellation, &mut record)
+}
+
+fn protected_source(protection: StreamProtection) -> SourceDisposition {
+	SourceDisposition::Kept {
+		reason: Some(protection.reason().to_string()),
+	}
 }
 
 fn decide(job: &Job, completion: &Completion<'_>, cancellation: &Cancellation) -> SourceDisposition {
@@ -182,9 +211,10 @@ fn decide(job: &Job, completion: &Completion<'_>, cancellation: &Cancellation) -
 	match cancellation.commit(|| {
 		let recovery = completion.recovery.retained().expect("retained recovery checked above");
 		let _guard = recovery.guard_disposal(&job.outputs)?;
-		retype_core::safety::remove_owned(path, fingerprint)
+		retype_core::safety::remove_or_protect_streams(path, fingerprint, &Cancellation::default())
 	}) {
-		Ok(()) => {
+		Ok(Removal::Protected(protection)) => protected_source(protection),
+		Ok(Removal::Removed) => {
 			#[cfg(feature = "test-checkpoints")]
 			if let Err(error) = retype_core::test_checkpoints::checkpoint("disposition.removed", path) {
 				return SourceDisposition::Unresolved {
@@ -193,7 +223,13 @@ fn decide(job: &Job, completion: &Completion<'_>, cancellation: &Cancellation) -
 			}
 			SourceDisposition::Removed
 		}
-		Err(error) => retained(path, fingerprint, Some(error.to_string())),
+		Err(error) => {
+			let mut disposition = retained(path, fingerprint, Some(error.to_string()));
+			if let SourceDisposition::Unresolved { reason } = &mut disposition {
+				*reason = format!("{reason}; cleanup did not settle: {error}");
+			}
+			disposition
+		}
 	}
 }
 
@@ -201,7 +237,7 @@ fn retained(path: &Path, fingerprint: &Fingerprint, reason: Option<String>) -> S
 	match fingerprint.matches(path) {
 		Ok(true) => match reason {
 			Some(reason) => SourceDisposition::Retained { reason },
-			None => SourceDisposition::Kept,
+			None => SourceDisposition::Kept { reason: None },
 		},
 		Ok(false) => SourceDisposition::Unresolved {
 			reason: format!("{} changed or was replaced during conversion", path.display()),
@@ -220,6 +256,67 @@ mod tests {
 	use retype_core::undo::{Output as UndoOutput, Store, Subject};
 
 	use super::*;
+
+	#[test]
+	fn stream_protection_is_a_final_non_warning_outcome_on_replay() {
+		let dir = tempfile::tempdir().unwrap();
+		let state = dir.path().join("state");
+		let source = dir.path().join("source.tar");
+		fs::write(&source, b"original bytes").unwrap();
+		let server = super::super::Server::open(&state).unwrap();
+		server.pool().stop();
+		let store = Store::open(&state);
+		let mut settled = Vec::new();
+		for protection in [StreamProtection::NamedStreams, StreamProtection::InspectionUnavailable] {
+			let mut output = Output::pending(dir.path().join("output.zip"), "zip", Tier::Converted);
+			output.state = OutputState::Done;
+			let mut job = Job::new(
+				JobSource {
+					path: source.clone(),
+					format: "tar".to_string(),
+					size: 14,
+					mtime_ns: 0,
+					fingerprint: None,
+				},
+				Some("zip".to_string()),
+				vec![output],
+				"test",
+			)
+			.unwrap();
+			job.state = JobState::Done;
+			job.consume_source = true;
+			let recovery = Recovery::Unavailable(store.lease(&job.id).unwrap());
+			let job = record_outcome(
+				&server.shared(),
+				job,
+				protected_source(protection),
+				recovery,
+				&mut persist,
+			)
+			.unwrap()
+			.into_job();
+			assert!(crate::output::job_failure(&job).is_none());
+			assert!(crate::output::source_disposition_warning(&job).is_none());
+			assert_eq!(
+				job.to_record().unwrap()["source_disposition"]["reason"],
+				protection.reason()
+			);
+			settled.push(job);
+		}
+		drop(server);
+
+		let journal = state.join("jobs.jsonl");
+		let before = fs::read(&journal).unwrap();
+		let restarted = super::super::Server::open(&state).unwrap();
+		restarted.recoveries().wait();
+		restarted.pool().stop();
+		let shared = restarted.shared();
+		let jobs = shared.jobs.lock().unwrap();
+		assert_eq!(jobs.len(), settled.len());
+		assert!(settled.iter().all(|job| jobs.contains(job)));
+		assert_eq!(fs::read(journal).unwrap(), before);
+		assert_eq!(fs::read(source).unwrap(), b"original bytes");
+	}
 
 	#[test]
 	fn a_failed_outcome_checkpoint_reports_removed_source_and_keeps_recovery_pinned() {
