@@ -387,6 +387,8 @@ def main():
             check('offline CLI undo restores exact HEIC and removes only its output', file_digests(work) == original)
             check('offline CLI undo does not spawn a daemon', not (state / 'endpoint').exists() and
                   sha(state / 'daemon.log') == daemon_log)
+            if linux:
+                daemon_pid = cli('start-for-uninstall', 'daemon', 'start')['pid']
             journal = (state / 'jobs.jsonl').read_bytes()
             if windows:
                 current = json.loads(user_path('user-path-before-uninstall'))
@@ -398,6 +400,8 @@ def main():
             else:
                 run('uninstall', ['bash', repo / 'packaging/install.sh', '--uninstall', '--prefix', prefix])
             if linux:
+                check('uninstall drains the installed daemon', not (state / 'endpoint').exists() and
+                      not Path(f'/proc/{daemon_pid}/exe').exists())
                 check('uninstall preserves state and removes integration', not binary.exists() and
                       not desktop.exists() and not unit.exists() and (state / 'jobs.jsonl').read_bytes() == journal)
             else:

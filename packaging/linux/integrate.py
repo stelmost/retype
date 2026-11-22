@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Install or remove Retype's per-user Linux desktop integration."""
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
+import select
 import shlex
 import shutil
+import socket
 import stat
+import struct
 import subprocess
 import tempfile
 
@@ -144,6 +148,14 @@ def manager_available(config):
 	return bool(manager_config) and Path(manager_config).resolve() == config.resolve()
 
 
+def manager_owns(unit, prefix):
+	owner = installation_owner(unit)
+	if owner is None or owner.resolve() != prefix.resolve():
+		return False
+	loaded = run('systemctl', '--user', 'show', '--property=FragmentPath', '--value', 'retype.service').stdout.strip()
+	return bool(loaded) and Path(loaded).resolve() == unit.resolve()
+
+
 def refresh(data, manager):
 	if shutil.which('update-desktop-database'):
 		run('update-desktop-database', str(data / 'applications'))
@@ -175,8 +187,9 @@ def installation(prefix, backup, operation):
 		if owner is not None and owner.resolve() != prefix.resolve():
 			raise RuntimeError(f'{path} belongs to Retype under {owner}; update or remove that installation first')
 	manager = manager_available(config)
+	owned = manager and manager_owns(unit, prefix)
 	journal = {'files': {}, 'data': str(data), 'manager': manager,
-		'active': manager and run('systemctl', '--user', 'is-active', '--quiet', 'retype.service', check=False).returncode == 0,
+		'active': owned and run('systemctl', '--user', 'is-active', '--quiet', 'retype.service', check=False).returncode == 0,
 		'enabled': False}
 	for path in (unit, desktop, *paths):
 		remember(journal, path)
@@ -185,7 +198,7 @@ def installation(prefix, backup, operation):
 	if operation == 'remove':
 		if previous is None:
 			raise RuntimeError('This installation has no Linux integration record')
-		remove(previous, journal, journal_path, unit, desktop, data, manager)
+		remove(previous, journal, journal_path, unit, desktop, data, manager, prefix)
 		return
 	state = previous or {'config': str(config), 'data': str(data), 'files': {}, 'preferences': {}}
 	for path, template, is_desktop in ((unit, 'retype.service', False), (desktop, DESKTOP, True)):
@@ -230,8 +243,10 @@ def preferences(state, paths):
 		raise RuntimeError('The desktop did not accept the Retype URI association')
 
 
-def stop_service(unit, journal, journal_path, manager):
+def stop_service(unit, journal, journal_path, manager, prefix):
 	if manager:
+		if not manager_owns(unit, prefix):
+			return
 		journal['enabled'] = run('systemctl', '--user', 'is-enabled', 'retype.service', check=False).stdout.strip()
 		save_json(journal_path, journal)
 		run('systemctl', '--user', 'stop', 'retype.service')
@@ -246,10 +261,95 @@ def stop_service(unit, journal, journal_path, manager):
 					link.unlink()
 
 
-def remove(state, journal, journal_path, unit, desktop, data, manager):
+def selected_state():
+	explicit = os.environ.get('RETYPE_STATE_DIR')
+	if explicit:
+		return Path(explicit)
+	state = Path(os.environ.get('XDG_STATE_HOME', ''))
+	return (state if state.is_absolute() else Path.home() / '.local/state') / 'retype'
+
+
+def locked_daemon(state):
+	try:
+		lock = os.open(state / 'lock', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+	except FileNotFoundError:
+		return None
+	with os.fdopen(lock, 'rb') as handle:
+		info = os.fstat(lock)
+		if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+			raise RuntimeError('Cannot verify ownership of the selected daemon lock')
+		try:
+			fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+		except BlockingIOError:
+			pid = handle.read(32).strip()
+			if not pid.isdigit() or not 1 < int(pid) <= 2147483647:
+				raise RuntimeError('The selected daemon is starting; retry removal when it is ready')
+			return int(pid)
+	return None
+
+
+def daemon_request(connection, reader, request, method, **params):
+	connection.sendall(json.dumps({'id': request, 'method': method, 'params': params}).encode() + b'\n')
+	frame = reader.readline(1024 * 1024 + 2)
+	if len(frame) > 1024 * 1024 + 1 or not frame.endswith(b'\n'):
+		raise RuntimeError(f'No complete daemon reply for {method}')
+	answer = json.loads(frame)
+	if answer.get('id') != request or answer.get('ok') is not True:
+		raise RuntimeError(f'Daemon refused {method}: {answer.get("error")}')
+	return answer['result']
+
+
+def request_drain(state, pid):
+	with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+		connection.settimeout(5)
+		try:
+			connection.connect(str(state / 'daemon.sock'))
+		except (ConnectionRefusedError, FileNotFoundError):
+			return
+		credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('iII'))
+		peer, uid, _ = struct.unpack('iII', credentials)
+		if peer != pid or uid != os.getuid():
+			raise RuntimeError('The selected daemon changed during removal; retry when it is ready')
+		with connection.makefile('rb') as reader:
+			hello = daemon_request(connection, reader, 1, 'hello', ipc='retype-ipc-1', client='installer')
+			if hello.get('pid') != pid or hello.get('ipc') != 'retype-ipc-1':
+				raise RuntimeError('Cannot verify the selected daemon protocol and identity')
+			daemon_request(connection, reader, 2, 'shutdown', now=False, force=False)
+
+
+def stop_detached(prefix):
+	state = selected_state().resolve()
+	pid = locked_daemon(state)
+	if pid is None:
+		return
+	try:
+		process = os.pidfd_open(pid)
+	except ProcessLookupError:
+		return
+	try:
+		executable = Path(f'/proc/{pid}/exe').readlink()
+		installed = (prefix / 'bin').resolve() / 'retype'
+		if executable not in (installed, Path(f'{installed} (deleted)')):
+			return
+		if locked_daemon(state) != pid:
+			raise RuntimeError('The selected daemon changed during removal; retry when it is ready')
+		request_drain(state, pid)
+		poll = select.poll()
+		poll.register(process, select.POLLIN)
+		if not poll.poll(300_000):
+			raise RuntimeError('The installed daemon has not stopped; retry removal after it finishes draining')
+	except FileNotFoundError:
+		if locked_daemon(state) is not None:
+			raise
+	finally:
+		os.close(process)
+
+
+def remove(state, journal, journal_path, unit, desktop, data, manager, prefix):
 	unit_record = state['files'].get(str(unit))
 	if unit_record and unit.exists():
-		stop_service(unit, journal, journal_path, manager)
+		stop_service(unit, journal, journal_path, manager, prefix)
+	stop_detached(prefix)
 	for key, entry in state['preferences'].items():
 		path = Path(key)
 		current = text(path)

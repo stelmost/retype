@@ -133,9 +133,9 @@ usage() {
 Install or update retype from a GitHub release.
 
 Usage:
-  curl -fsSL https://retype.name/install.sh | bash
-  curl -fsSL https://retype.name/install.sh | bash -s -- --version v0.1.0-alpha
-  curl -fsSL https://retype.name/install.sh | bash -s -- --prefix /usr/local
+  bash ./install.sh
+  bash ./install.sh --version '<supported-release-tag>'
+  bash ./install.sh --prefix "$HOME/.local"
 
 Options:
   --version TAG   Install a specific release tag instead of the latest
@@ -155,7 +155,7 @@ Environment:
 
 Signed installs need an independently trusted minisign and fixed publisher pins.
 On Linux, installs the notification/URI desktop entry and systemd user unit;
-new services stay disabled. Requires python3 and xdg-mime (xdg-utils).
+new services stay disabled. Requires Python 3.12 or newer and xdg-mime (xdg-utils).
 On macOS, installs the native app/URI identity; startup stays off unless opted in.
 No SDK, compiler, elevation, keychain changes or converter installation is performed.
 EOF
@@ -251,6 +251,40 @@ extract_macos() {
 	' "$destination" "$root" || die 'extracted archive failed type/ownership/permission validation'
 }
 # END RETYPE_MACOS_EXTRACTION
+
+extract_linux() {
+	python3 - "$1" "$2" "$3" <<'PYTHON'
+import re
+import sys
+import tarfile
+
+archive, destination, root = sys.argv[1:]
+try:
+	with tarfile.open(archive, 'r:gz') as source:
+		members = {}
+		for entry in source:
+			parts = entry.name.split('/')
+			if (parts[0] != root or not re.fullmatch(r'[A-Za-z0-9_.+/-]+', entry.name)
+					or any(part in ('', '.', '..') for part in parts)):
+				raise ValueError(f'unsupported archive path: {entry.name!r}')
+			if not (entry.isdir() or (entry.isfile() and not entry.issparse())):
+				raise ValueError(f'links and special archive entries are unsupported: {entry.name!r}')
+			key = entry.name.lower()
+			if key in members:
+				raise ValueError(f'duplicate or case-colliding archive member: {entry.name!r}')
+			members[key] = entry
+		if root.lower() not in members or not members[root.lower()].isdir():
+			raise ValueError('missing archive root directory')
+		for entry in members.values():
+			parent = entry.name.rpartition('/')[0]
+			if parent and (parent.lower() not in members or not members[parent.lower()].isdir()
+					or members[parent.lower()].name != parent):
+				raise ValueError(f'archive parent is not a declared directory: {entry.name!r}')
+		source.extractall(destination, members=members.values(), filter='data')
+except (OSError, tarfile.TarError, ValueError) as error:
+	raise SystemExit(f'install: unsafe or invalid Linux release archive: {error}') from error
+PYTHON
+}
 
 # Current Debian stable (trixie) defines the Linux floor. Report an older runtime
 # before attempting to execute the downloaded binary.
@@ -410,6 +444,8 @@ latest)
 v*) tag=$version ;;
 *) tag=v$version ;;
 esac
+[[ $tag =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] || die 'invalid release tag'
+[[ $target =~ ^(x86_64|aarch64)-(unknown-linux-gnu|apple-darwin)$ ]] || die 'unsupported release target'
 
 release_base=${release_base%/}
 base=$release_base/$tag
@@ -507,7 +543,6 @@ else
 	[ "$actual" = "$expected" ] || die "checksum mismatch for $archive: expected $expected, got $actual"
 fi
 
-have tar || die 'needs tar'
 case $target in
 *-apple-darwin)
 	extract_macos "$tmp/$archive" "$tmp/unpack" "$name"
@@ -517,9 +552,9 @@ case $target in
 	cmp -s "$src/bin/retype" "$src/share/retype/macos/retype.app/Contents/Resources/retype" ||
 		die 'macOS archive CLI differs from the bundled CLI'
 	;;
-*)
-	tar -xzf "$tmp/$archive" -C "$tmp"
-	src=$tmp/$name
+*-unknown-linux-gnu)
+	extract_linux "$tmp/$archive" "$tmp/unpack" "$name"
+	src=$tmp/unpack/$name
 	;;
 esac
 [ -f "$src/bin/retype" ] || die "$archive does not contain bin/retype"

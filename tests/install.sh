@@ -109,6 +109,7 @@ cat >"$tmp/bin/systemctl" <<'EOF'
 printf '%s\n' "$*" >>"$RETYPE_TEST_SYSTEMCTL_RECORD"
 case $2 in
 show-environment) printf '%q\n' "HOME=$HOME" "XDG_CONFIG_HOME=${RETYPE_TEST_MANAGER_CONFIG:-$XDG_CONFIG_HOME}" ;;
+show) printf '%s\n' "${RETYPE_TEST_UNIT_FRAGMENT:-$XDG_CONFIG_HOME/systemd/user/retype.service}" ;;
 is-active) [ -f "$RETYPE_TEST_SERVICE_ACTIVE" ] ;;
 is-enabled) [ -f "$RETYPE_TEST_SERVICE_ENABLED" ] && printf 'enabled\n' ;;
 stop) rm -f "$RETYPE_TEST_SERVICE_ACTIVE" ;;
@@ -215,6 +216,44 @@ if env "${common[@]}" RETYPE_VERSION=v0.0.2-broken bash "$root/packaging/install
 	exit 1
 fi
 [ "$("$prefix/bin/retype" --version)" = 'retype 0.0.1-test' ]
+
+# Reject ambiguous paths and non-regular entries before any staged executable runs.
+for invalid in linked duplicate unrelated; do
+	version=v0.0.2-$invalid
+	name=retype-$version-$target
+	release "$version" 'unexpected executable' 'touch "$RETYPE_TEST_ARCHIVE_EXECUTION"'
+	archive="$tmp/releases/$version/$name.tar.gz"
+	python3 - "$archive" "$name" "$invalid" <<'PYTHON'
+import io
+import sys
+import tarfile
+
+archive, name, invalid = sys.argv[1:]
+with tarfile.open(archive, 'r:gz') as source:
+	members = [(member, source.extractfile(member).read() if member.isfile() else b'') for member in source]
+with tarfile.open(archive, 'w:gz') as target:
+	for member, data in members:
+		target.addfile(member, io.BytesIO(data))
+	if invalid == 'linked':
+		member = tarfile.TarInfo(f'{name}/link')
+		member.type = tarfile.SYMTYPE
+		member.linkname = 'bin/retype'
+	elif invalid == 'duplicate':
+		member = tarfile.TarInfo(f'{name}/bin/ReType')
+	else:
+		member = tarfile.TarInfo('unrelated')
+	target.addfile(member)
+PYTHON
+	printf '%s  %s\n' "$(sha256_of "$archive")" "$name.tar.gz" >"$tmp/releases/$version/SHA256SUMS"
+	if env "${common[@]}" RETYPE_TEST_ARCHIVE_EXECUTION="$tmp/executed-invalid-archive" \
+		bash "$root/packaging/install.sh" --version "$version" >"$tmp/$invalid.log" 2>&1; then
+		echo "installer accepted a $invalid archive" >&2
+		exit 1
+	fi
+	grep -q 'unsafe or invalid Linux release archive' "$tmp/$invalid.log"
+	[ ! -e "$tmp/executed-invalid-archive" ]
+	[ "$("$prefix/bin/retype" --version)" = 'retype 0.0.1-test' ]
+done
 [ "$(<"$prefix/share/retype/previous.txt")" = 'retain these assets' ]
 
 # Simulate failure after moving the previous shared tree into its persistent backup.
