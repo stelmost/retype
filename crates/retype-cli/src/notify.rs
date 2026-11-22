@@ -2,8 +2,8 @@
 //!
 //! One notification per rename batch, because a directory full of photographs should
 //! not be twelve interruptions. The message is built from the records, so it says what
-//! happened rather than what was attempted. The Linux action opens a native Review
-//! dialog; the notification itself never undoes anything.
+//! happened rather than what was attempted. On supported desktops Review opens a
+//! native dialog; the notification itself never undoes anything.
 //!
 //! Capability is a property of the platform, so there are three tiers and the daemon
 //! uses the best one it has:
@@ -11,16 +11,9 @@
 //! | Tier | How | Where |
 //! |---|---|---|
 //! | Review | `notify-send --wait --action`, then Zenity | Linux with notification actions and a graphical session |
-//! | Plain | `notify-send` | Linux with a session bus |
-//! | Plain | the installed `retype.app` notifier, or `osascript` in source builds | macOS |
-//! | Plain | a toast through `powershell.exe` | Windows |
+//! | Review | protocol activation from the installed notification identity | Windows and macOS |
+//! | Plain | `notify-send`, the macOS notifier/`osascript`, or a PowerShell toast | when Review is unavailable or disabled |
 //! | Log | a line on the daemon's stderr | anywhere the platform has no notifier |
-//!
-//! The Windows toast has no button, and does not need a signed bundle: it needs an
-//! AppUserModelID the shell can resolve, which the script registers under
-//! `HKCU\Software\Classes\AppUserModelId` before the first toast. Protocol activation
-//! through a Start-menu shortcut still needs the signed notifier bundle, which is
-//! not built yet. The macOS app supplies its own identity and URI handling, with no buttons.
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -270,7 +263,7 @@ fn file_name(path: &Path) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
 	/// A notification with a Review button.
-	#[cfg(target_os = "linux")]
+	#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 	Actions,
 	/// A notification without buttons.
 	Plain,
@@ -281,30 +274,26 @@ pub enum Channel {
 impl Channel {
 	/// What this machine can do, decided once at startup.
 	pub fn detect(actions: bool) -> Self {
-		// macOS has its own notifier. It carries no action, but a person on macOS
-		// expects a notification rather than a line they have to go looking for.
 		#[cfg(target_os = "macos")]
 		{
-			let _ = actions;
-			if std::env::current_exe()
-				.ok()
-				.and_then(|path| macos_notifier(&path))
-				.is_some() || has_command("osascript")
-			{
+			if installed_macos_notifier().is_some() {
+				return if actions { Self::Actions } else { Self::Plain };
+			}
+			if has_command("osascript") {
 				Self::Plain
 			} else {
 				Self::Log
 			}
 		}
 
-		// Windows has a notifier wherever the shell does: the toast API is part of the
-		// OS, and `powershell.exe` is what displays one from a process without a bundle.
-		#[cfg(target_os = "windows")]
+		#[cfg(windows)]
 		{
-			let _ = actions;
-			match has_command("powershell") {
-				true => Self::Plain,
-				false => Self::Log,
+			if review::dialog::windows_powershell().is_none() {
+				Self::Log
+			} else if actions {
+				Self::Actions
+			} else {
+				Self::Plain
 			}
 		}
 
@@ -315,7 +304,7 @@ impl Channel {
 			}
 
 			#[cfg(target_os = "linux")]
-			if actions && review::available() {
+			if actions && review::dialog::batch_available() {
 				return Self::Actions;
 			}
 			let _ = actions;
@@ -324,9 +313,11 @@ impl Channel {
 	}
 
 	/// Show the message, and open a read-only review if requested.
-	pub fn send(&self, message: &Message, state_dir: &Path) {
+	pub fn send(&self, message: &Message, state_dir: &Path, job: Option<&JobId>) {
 		#[cfg(not(target_os = "linux"))]
 		let _ = state_dir;
+		#[cfg(not(any(windows, target_os = "macos")))]
+		let _ = job;
 		match self {
 			Self::Log => {
 				// The title is the product's own name, so a log line would say it twice.
@@ -337,11 +328,23 @@ impl Channel {
 			}
 			#[cfg(target_os = "linux")]
 			Self::Actions => match notify_send(message, true) {
-				Ok(true) => review::show(message, state_dir),
+				Ok(true) => {
+					if let Err(error) = review::show_batch(message, state_dir) {
+						eprintln!("retype: Review failed: {error}");
+					}
+				}
 				Ok(false) => {}
 				/* The notification server may already have displayed a plain fallback. */
 				Err(error) => eprintln!("retype: Review notification unavailable: {error}; {}", message.body),
 			},
+			#[cfg(any(windows, target_os = "macos"))]
+			Self::Actions => {
+				let url = job.map(crate::uri::review_url);
+				#[cfg(windows)]
+				let _ = toast(message, url.as_deref());
+				#[cfg(target_os = "macos")]
+				let _ = macos_notification(message, url.as_deref());
+			}
 		}
 	}
 }
@@ -350,42 +353,53 @@ impl Channel {
 fn plain(message: &Message) -> Option<String> {
 	#[cfg(target_os = "macos")]
 	{
-		if let Some(helper) = std::env::current_exe().ok().and_then(|path| macos_notifier(&path)) {
-			return match send_macos(&helper, message, std::time::Duration::from_secs(30)) {
-				Ok(()) => Some(String::new()),
-				Err(error) => {
-					eprintln!("retype: native notification failed: {error}; {}", message.body);
-					None
-				}
-			};
-		}
-
-		let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
-		let script = format!(
-			"display notification {} with title {}",
-			quote(&message.body),
-			quote(&message.title)
-		);
-
-		let output = Command::new("osascript")
-			.args(["-e", &script])
-			.stdin(Stdio::null())
-			.stderr(Stdio::null())
-			.output()
-			.ok()?;
-
-		output.status.success().then(String::new)
+		macos_notification(message, None)
 	}
 
-	#[cfg(target_os = "windows")]
+	#[cfg(windows)]
 	{
-		toast(message)
+		toast(message, None)
 	}
 
 	#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 	{
 		notify_send(message, false).ok().map(|_| String::new())
 	}
+}
+
+#[cfg(target_os = "macos")]
+fn macos_notification(message: &Message, url: Option<&str>) -> Option<String> {
+	if let Some(helper) = installed_macos_notifier() {
+		let url = url.filter(|_| review::dialog::local_desktop());
+		return match send_macos(&helper, message, url, std::time::Duration::from_secs(30)) {
+			Ok(()) => Some(String::new()),
+			Err(error) => {
+				eprintln!("retype: native notification failed: {error}; {}", message.body);
+				None
+			}
+		};
+	}
+
+	let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+	let script = format!(
+		"display notification {} with title {}",
+		quote(&message.body),
+		quote(&message.title)
+	);
+
+	let output = Command::new("osascript")
+		.args(["-e", &script])
+		.stdin(Stdio::null())
+		.stderr(Stdio::null())
+		.output()
+		.ok()?;
+
+	output.status.success().then(String::new)
+}
+
+#[cfg(target_os = "macos")]
+fn installed_macos_notifier() -> Option<std::path::PathBuf> {
+	macos_notifier(&std::env::current_exe().ok()?)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -403,9 +417,15 @@ fn macos_notifier(executable: &Path) -> Option<std::path::PathBuf> {
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
-fn send_macos(helper: &Path, message: &Message, timeout: std::time::Duration) -> std::io::Result<()> {
+fn send_macos(
+	helper: &Path,
+	message: &Message,
+	url: Option<&str>,
+	timeout: std::time::Duration,
+) -> std::io::Result<()> {
 	let child = Command::new(helper)
 		.args(["notify", &message.title, &message.body])
+		.args(url)
 		.stdin(Stdio::null())
 		.stdout(Stdio::null())
 		.stderr(Stdio::inherit())
@@ -417,7 +437,7 @@ fn send_macos(helper: &Path, message: &Message, timeout: std::time::Duration) ->
 	Ok(())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, all(test, unix)))]
 fn wait_for_helper(
 	mut child: std::process::Child,
 	timeout: std::time::Duration,
@@ -475,65 +495,128 @@ fn notify_send(message: &Message, with_action: bool) -> std::io::Result<bool> {
 	Ok(output.stdout == b"review\n")
 }
 
-#[cfg(target_os = "linux")]
-mod review {
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub(crate) mod review {
 	use std::collections::BTreeSet;
 	use std::fs;
 	use std::io;
-	use std::os::unix::fs::MetadataExt;
-	use std::time::Duration;
 
-	use retype_core::error::Result;
+	use retype_core::error::{Code, Diagnostic, Result};
 	use retype_core::execute::Cancellation;
-	use retype_core::job::FileIdentity;
+	use retype_core::job::JobId;
 	use retype_core::safety::Fingerprint;
 	use retype_core::undo::{Link, Record, Store};
 
-	use super::{Command, Message, OutputState, Path, Stdio, has_command, wait_for_helper};
+	use super::{Message, OutputState, Path, file_name};
+
+	pub(super) mod dialog;
 
 	const MAX_PATHS: usize = 6;
 	const MAX_PATH_BYTES: usize = 120;
 	const MAX_SUMMARY_CHARS: usize = 240;
-	const UNDO_RESPONSE: i32 = 42;
 
 	struct Proposal {
 		records: Vec<Record>,
 		text: String,
 	}
 
-	pub(super) fn available() -> bool {
-		["WAYLAND_DISPLAY", "DISPLAY"]
-			.iter()
-			.any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
-			&& has_command("zenity")
+	pub(crate) fn open_job(state_dir: &Path, id: &JobId) -> Result<()> {
+		if !dialog::local_desktop() {
+			return Err(Diagnostic::global(Code::Unsupported, "Review needs a local graphical session").into());
+		}
+		let store = Store::open(state_dir);
+		let message = local_job(state_dir, &store, id)?;
+		show(&store, &message, |text, label| {
+			let approved = dialog::show(&format!("Job {id}\n\n{text}"), label)?;
+			Ok(approved && dialog::local_desktop())
+		})
 	}
 
-	pub(super) fn show(message: &Message, state_dir: &Path) {
-		let store = Store::open(state_dir);
-		let proposal = match propose(&store, message) {
+	fn local_job(state_dir: &Path, store: &Store, id: &JobId) -> Result<Message> {
+		/* Check existing state without creating it or changing permissions. */
+		match fs::symlink_metadata(state_dir) {
+			Ok(metadata) if private_state(&metadata) => {}
+			Ok(_) => return Err(io::Error::other("Review requires private Retype state").into()),
+			Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(job_not_found()),
+			Err(error) => return Err(error.into()),
+		}
+		let job = crate::client::connect(state_dir)
+			.ok()
+			.and_then(|mut client| client.jobs_get(id.as_str()).ok())
+			.filter(|job| &job.id == id);
+		if let Some(job) = job {
+			return Ok(
+				Message::of(std::slice::from_ref(&job), true).unwrap_or_else(|| Message {
+					title: "retype".to_string(),
+					body: format!("{}: {:?}", file_name(&job.source.path), job.state),
+					undo: Vec::new(),
+				}),
+			);
+		}
+		let record = store
+			.load(id)?
+			.filter(|record| &record.id == id)
+			.ok_or_else(job_not_found)?;
+		Ok(Message {
+			title: "retype".to_string(),
+			body: format!("Retained recovery for {}", file_name(&record.source_path)),
+			undo: vec![record.id],
+		})
+	}
+
+	fn job_not_found() -> retype_core::error::Error {
+		Diagnostic::global(Code::JobNotFound, "no local job matches this Review link").into()
+	}
+
+	fn private_state(metadata: &fs::Metadata) -> bool {
+		if !metadata.is_dir() {
+			return false;
+		}
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::MetadataExt;
+			metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0
+		}
+		#[cfg(windows)]
+		{
+			use std::os::windows::fs::MetadataExt;
+			use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+			metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
+		}
+	}
+
+	#[cfg(target_os = "linux")]
+	pub(super) fn show_batch(message: &Message, state_dir: &Path) -> Result<()> {
+		show(&Store::open(state_dir), message, dialog::show_batch)
+	}
+
+	fn show(store: &Store, message: &Message, display: impl Fn(&str, Option<&str>) -> io::Result<bool>) -> Result<()> {
+		let approval = match propose(store, message) {
 			Ok(proposal) => proposal,
 			Err(error) => {
 				eprintln!("retype: cannot review undo records: {error}");
 				None
 			}
 		};
-		let label = proposal.as_ref().map(|proposal| match proposal.records.len() {
+		let Some(proposal) = approval else {
+			display(&close_only_text(&message.body), None)?;
+			return Ok(());
+		};
+		let label = match proposal.records.len() {
 			1 => "Undo".to_string(),
 			count => format!("Undo {count} conversions"),
-		});
-		let text = match &proposal {
-			Some(proposal) => &proposal.text,
-			None => &close_only_text(&message.body),
 		};
-		match (dialog(text, label.as_deref()), proposal) {
-			(Ok(true), Some(proposal)) => {
-				if let Err(error) = restore(&store, &proposal.records) {
-					eprintln!("retype: cannot undo reviewed conversions: {error}");
-				}
+		if display(&proposal.text, Some(&label))?
+			&& let Err(error) = restore(store, &proposal.records)
+		{
+			eprintln!("retype: cannot undo reviewed conversions: {error}");
+			let message = format!("Retype could not finish Undo.\n\n{}", summary(&error.to_string()));
+			if let Err(display_error) = display(&message, None) {
+				eprintln!("retype: cannot show Undo result: {display_error}");
 			}
-			(Err(error), _) => eprintln!("retype: cannot show review: {error}"),
-			_ => {}
+			return Err(error);
 		}
+		Ok(())
 	}
 
 	fn propose(store: &Store, message: &Message) -> Result<Option<Proposal>> {
@@ -616,7 +699,7 @@ mod review {
 	}
 
 	fn close_only_text(body: &str) -> String {
-		format!("{}\n\nUndo is not available for this batch.", summary(body))
+		format!("{}\n\nUndo is not available.", summary(body))
 	}
 
 	/* Preflight only metadata; checked restoration verifies backup and output contents. */
@@ -630,25 +713,43 @@ mod review {
 		}
 		match fs::symlink_metadata(&record.source_path) {
 			Ok(metadata) if !metadata.is_file() => return Ok(false),
-			Ok(metadata) if record.consume_source && !matches_metadata(&metadata, original) => return Ok(false),
+			Ok(metadata) if record.consume_source && !matches_metadata(&record.source_path, &metadata, original) => {
+				return Ok(false);
+			}
 			Ok(_) => {}
 			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
 			Err(error) => return Err(error.into()),
 		}
 		for commit in &record.commits {
-			let metadata = fs::symlink_metadata(&commit.output.path)?;
-			if !matches_metadata(&metadata, &commit.fingerprint) {
+			let path = &commit.output.path;
+			if !matches_metadata(path, &fs::symlink_metadata(path)?, &commit.fingerprint) {
 				return Ok(false);
 			}
 		}
 		Ok(true)
 	}
 
-	fn matches_metadata(metadata: &fs::Metadata, fingerprint: &Fingerprint) -> bool {
-		metadata.is_file()
-			&& metadata.len() == fingerprint.bytes
-			&& matches!(fingerprint.identity, Some(FileIdentity::Unix { dev, ino, .. })
+	fn matches_metadata(path: &Path, metadata: &fs::Metadata, fingerprint: &Fingerprint) -> bool {
+		use retype_core::job::FileIdentity;
+
+		if !metadata.is_file() || metadata.len() != fingerprint.bytes {
+			return false;
+		}
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::MetadataExt;
+			let _ = path;
+			matches!(fingerprint.identity, Some(FileIdentity::Unix { dev, ino, .. })
 				if dev == metadata.dev() && ino == metadata.ino())
+		}
+		#[cfg(windows)]
+		{
+			fingerprint
+				.identity
+				.as_ref()
+				.zip(FileIdentity::of(path))
+				.is_some_and(|(wanted, found)| wanted.matches(&found))
+		}
 	}
 
 	fn restore(store: &Store, records: &[Record]) -> Result<()> {
@@ -669,41 +770,39 @@ mod review {
 		Ok(())
 	}
 
-	fn dialog(text: &str, undo_label: Option<&str>) -> io::Result<bool> {
-		let mut command = Command::new("zenity");
-		command.args(["--title=retype Review", "--no-markup", "--timeout=60", "--text", text]);
-		if let Some(label) = undo_label {
-			command.args([
-				"--question",
-				"--default-cancel",
-				"--cancel-label=Close",
-				"--ok-label",
-				label,
-			]);
-		} else {
-			command.args(["--info", "--ok-label=Close"]);
-		}
-		/* Debian 13 Zenity 4.1.90-1 (msg.c, util.c) maps Yes to ZENITY_OK and
-		 * reports No, dismissal and timeout separately. Do not accept an ordinary exit 0. */
-		let child = command
-			.env("ZENITY_OK", UNDO_RESPONSE.to_string())
-			.envs([
-				("ZENITY_CANCEL", "1"),
-				("ZENITY_ESC", "1"),
-				("ZENITY_ERROR", "255"),
-				("ZENITY_TIMEOUT", "5"),
-			])
-			.stdin(Stdio::null())
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.spawn()?;
-		let status = wait_for_helper(child, Duration::from_secs(65), "review dialog")?;
-		match status.code() {
-			Some(UNDO_RESPONSE) => Ok(undo_label.is_some()),
-			Some(1 | 5) => Ok(false),
-			Some(0) if undo_label.is_none() => Ok(false),
-			_ => Err(io::Error::other(format!("zenity exited {status}"))),
-		}
+	#[cfg(test)]
+	#[test]
+	fn retained_recovery_is_selected_by_exact_id_without_starting_a_daemon() {
+		use retype_core::undo::Subject;
+
+		let temp = tempfile::tempdir().unwrap();
+		let state = temp.path().join("state");
+		crate::state::ensure_private_directory(&state).unwrap();
+		let source = temp.path().join("sample.png");
+		fs::write(&source, b"sample").unwrap();
+		let id = JobId::parse("01m6b4rararx3wrttkrgpp1783").unwrap();
+		let other = JobId::parse("01m6b4rararx3wrttkrgpp1784").unwrap();
+		let store = Store::open(&state);
+		let record = store
+			.save(Subject {
+				id: id.clone(),
+				intent: "webp".to_string(),
+				machine: "fixture".to_string(),
+				bytes: source.clone(),
+				source_path: source,
+				source_ext: "png".to_string(),
+				outputs: Vec::new(),
+				consume_source: false,
+			})
+			.unwrap();
+
+		let message = local_job(&state, &store, &id).unwrap();
+		assert_eq!(message.undo, vec![id.clone()]);
+		assert_eq!(store.load(&id).unwrap(), Some(record));
+		assert_eq!(local_job(&state, &store, &other).unwrap_err().code(), Code::JobNotFound);
+		fs::rename(store.directory(&id), store.directory(&other)).unwrap();
+		assert_eq!(local_job(&state, &store, &other).unwrap_err().code(), Code::JobNotFound);
+		assert!(!state.join(crate::state::ENDPOINT_FILE).exists());
 	}
 }
 
@@ -711,49 +810,93 @@ mod review {
 #[cfg(any(target_os = "windows", test))]
 const APP_ID: &str = "com.lapilliworks.retype.cli";
 
-/// Show a toast through PowerShell, which is the only notifier an unpackaged Windows
-/// process has without the signed bundle.
-#[cfg(target_os = "windows")]
-fn toast(message: &Message) -> Option<String> {
-	let mut command = Command::new("powershell.exe");
+/// Show a toast through system PowerShell. Without our registered handler it stays plain.
+#[cfg(windows)]
+fn toast(message: &Message, url: Option<&str>) -> Option<String> {
+	let mut command = Command::new(review::dialog::windows_powershell()?);
+	let url = url.filter(|_| review::dialog::local_desktop() && installed_windows_handler());
 	command
 		.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-		.arg(encoded_command(&toast_script(message)))
+		.arg(encoded_command(&toast_script(message, url)))
 		.stdin(Stdio::null())
 		.stdout(Stdio::null())
 		.stderr(Stdio::null());
-
-	// The daemon has no console, so the child must not be given one.
 	retype_core::process::hide_console(&mut command);
 
-	let output = command.output().ok()?;
-
-	output.status.success().then(String::new)
+	match command
+		.spawn()
+		.and_then(|child| wait_for_helper(child, std::time::Duration::from_secs(30), "Windows notification"))
+	{
+		Ok(status) if status.success() => Some(String::new()),
+		result => {
+			eprintln!("retype: native notification failed: {result:?}; {}", message.body);
+			None
+		}
+	}
 }
 
-/// The PowerShell that raises the toast, as `-EncodedCommand` expects it.
-///
-/// The identifier is registered under the user's own hive first, because the shell
-/// refuses a toast whose AppUserModelID it cannot resolve. If that registration or the
-/// toast fails, the fallback is PowerShell's own registered identifier: the toast then
-/// says `Windows PowerShell` rather than `retype`, which is worse than nothing only if
-/// nothing is the alternative.
-#[cfg(any(target_os = "windows", test))]
-fn toast_script(message: &Message) -> String {
+#[cfg(windows)]
+fn installed_windows_handler() -> bool {
+	use windows_sys::Win32::UI::Shell::{ASSOCF_IS_PROTOCOL, ASSOCF_NOTRUNCATE, ASSOCSTR_COMMAND, AssocQueryStringW};
+
+	let Ok(executable) = std::env::current_exe() else {
+		return false;
+	};
+	let Some(executable) = executable.to_str() else {
+		return false;
+	};
+	let mut buffer = vec![0u16; 32768];
+	let mut length = buffer.len() as u32;
+	let result = unsafe {
+		AssocQueryStringW(
+			ASSOCF_IS_PROTOCOL | ASSOCF_NOTRUNCATE,
+			ASSOCSTR_COMMAND,
+			windows_sys::w!("retype"),
+			std::ptr::null(),
+			buffer.as_mut_ptr(),
+			&mut length,
+		)
+	};
+	if result != 0 {
+		return false;
+	}
+	let length = buffer.iter().position(|word| *word == 0).unwrap_or(buffer.len());
+	String::from_utf16(&buffer[..length]).is_ok_and(|handler| is_windows_handler(&handler, executable))
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_handler(handler: &str, executable: &str) -> bool {
+	handler
+		.strip_prefix('"')
+		.and_then(|command| command.split_once('"'))
+		.is_some_and(|(path, args)| path.eq_ignore_ascii_case(executable) && args.ends_with(r#" uri -- "%1""#))
+}
+
+/// Use protocol activation only with our installed identity. The fallback toast is plain.
+#[cfg(any(windows, test))]
+fn toast_script(message: &Message, url: Option<&str>) -> String {
 	let xml = format!(
 		"<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
 		xml_escape(&message.title),
 		xml_escape(&message.body)
 	);
-
+	let review = url
+		.map(|url| {
+			format!(
+				"$document.LoadXml($plain.Replace('</toast>', '<actions><action content=\"Review\" \
+		 activationType=\"protocol\" arguments=\"{}\"/></actions></toast>'))",
+				xml_escape(url),
+			)
+		})
+		.unwrap_or_default();
 	format!(
 		r#"$ErrorActionPreference = 'Stop'
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 $document = New-Object Windows.Data.Xml.Dom.XmlDocument
-$document.LoadXml('{xml}')
-$toast = New-Object -TypeName Windows.UI.Notifications.ToastNotification -ArgumentList $document
+$plain = '{xml}'
+$document.LoadXml($plain)
 $app = '{APP_ID}'
 try {{
 	$key = 'HKCU:\Software\Classes\AppUserModelId\' + $app
@@ -761,8 +904,12 @@ try {{
 		New-Item -Path $key -Force | Out-Null
 		New-ItemProperty -LiteralPath $key -Name 'DisplayName' -Value 'retype' -PropertyType String -Force | Out-Null
 	}}
+	{review}
+	$toast = New-Object -TypeName Windows.UI.Notifications.ToastNotification -ArgumentList $document
 	[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show($toast)
 }} catch {{
+	$document.LoadXml($plain)
+	$toast = New-Object -TypeName Windows.UI.Notifications.ToastNotification -ArgumentList $document
 	$fallback = '{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\WindowsPowerShell\v1.0\powershell.exe'
 	[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($fallback).Show($toast)
 }}"#
@@ -834,6 +981,7 @@ fn has_notifier() -> bool {
 	has_command("notify-send")
 }
 
+#[cfg(not(windows))]
 fn has_command(command: &str) -> bool {
 	retype_core::tools::find_in_path(&std::env::var_os("PATH").unwrap_or_default(), command).is_some()
 }
@@ -1074,13 +1222,18 @@ mod tests {
 			body: "a&b; $HOME `echo no`\nnew line".to_string(),
 			undo: Vec::new(),
 		};
-		send_macos(&helper, &message, Duration::from_secs(2)).unwrap();
-		assert_eq!(
-			std::fs::read(&record).unwrap(),
-			format!("notify\0{}\0{}\0", message.title, message.body).as_bytes()
-		);
+		let url = crate::uri::review_url(&job(1, JobState::Done).id);
+		for url in [None, Some(url.as_str())] {
+			send_macos(&helper, &message, url, Duration::from_secs(2)).unwrap();
+			let mut expected = format!("notify\0{}\0{}\0", message.title, message.body);
+			if let Some(url) = url {
+				expected.push_str(url);
+				expected.push('\0');
+			}
+			assert_eq!(std::fs::read(&record).unwrap(), expected.as_bytes());
+		}
 		std::fs::write(&helper, "#!/bin/sh\nexit 7\n").unwrap();
-		let error = send_macos(&helper, &message, Duration::from_secs(2)).unwrap_err();
+		let error = send_macos(&helper, &message, None, Duration::from_secs(2)).unwrap_err();
 		assert!(error.to_string().contains('7'), "{error}");
 	}
 
@@ -1100,7 +1253,7 @@ mod tests {
 			undo: Vec::new(),
 		};
 		let start = Instant::now();
-		let error = send_macos(&helper, &message, Duration::from_millis(50)).unwrap_err();
+		let error = send_macos(&helper, &message, None, Duration::from_millis(50)).unwrap_err();
 		assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 		assert!(start.elapsed() < Duration::from_secs(2));
 	}
@@ -1129,14 +1282,38 @@ mod tests {
 			undo: Vec::new(),
 		};
 
-		let script = toast_script(&message);
+		let script = toast_script(&message, None);
 
 		assert!(script.contains("<text>retype</text>"), "{script}");
+		assert!(!script.contains("<action"), "{script}");
 		assert!(
 			script.contains("<text>1 converted (a&amp;b&lt;c&gt;.heic → a.jpg)</text>"),
 			"{script}"
 		);
 		assert!(script.contains(APP_ID), "{script}");
 		assert!(script.contains("AppUserModelId"), "{script}");
+	}
+
+	#[test]
+	fn desktop_review_names_one_full_job_and_toast_fallback_is_plain() {
+		let job = job(1, JobState::Done);
+		let message = Message::of(std::slice::from_ref(&job), true).unwrap();
+		let url = crate::uri::review_url(&job.id);
+		assert_eq!(url, format!("retype://job/{}", job.id));
+		let script = toast_script(&message, Some(&url));
+		let (registered, fallback) = script.split_once("} catch {").unwrap();
+		assert!(registered.contains(&format!(
+			r#"content="Review" activationType="protocol" arguments="{url}""#
+		)));
+		assert!(!fallback.contains(&url) && fallback.contains("$document.LoadXml($plain)"));
+	}
+
+	#[test]
+	fn protocol_activation_needs_our_installed_single_operand_handler() {
+		let executable = r"C:\Retype Test\bin\retype.exe";
+		let handler = format!(r#""{executable}" --state-dir "C:\Retype State" uri -- "%1""#);
+		assert!(is_windows_handler(&handler, executable));
+		assert!(!is_windows_handler(&handler, r"C:\Other\retype.exe"));
+		assert!(!is_windows_handler(&handler.replace(" -- ", " "), executable));
 	}
 }

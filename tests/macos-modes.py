@@ -30,7 +30,7 @@ def check_modes(source):
 	assert url_mode.index('UNUserNotificationCenter.current().delegate = delegate') < url_mode.index('application.run()')
 	assert 'withExtendedLifetime(delegate) { application.run() }' in url_mode
 	assert 'process.executableURL = cli' in uri
-	assert 'process.arguments = ["uri", uri, "--no-spawn"]' in uri
+	assert 'process.arguments = ["--no-spawn", "uri", "--", uri]' in uri
 	assert 'child.waitUntilExit()' in uri and 'finished(child)' in uri
 	assert 'throws -> Process' in uri
 	assert 'var children: [Process] = []' in url_delegate

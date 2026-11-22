@@ -1,135 +1,104 @@
-//! The `retype://` handler a desktop entry or Start-menu shortcut calls.
-//!
-//! A click on a notification or a link names one job and one action. The handler
-//! starts nothing: an undo can run in-process from the store, and every action that
-//! needs the daemon reports unavailable rather than replacing a job that the user
-//! may not know is gone. The GUI owns the editor action; the CLI owns undo, cancel
-//! and resolve.
+//! Desktop links select a local job for Review. A URL never authorizes a job action.
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use retype_core::error::Code;
-use retype_core::identifier::normalize;
-use serde_json::json;
+use retype_core::job::JobId;
 
 use crate::error::Result;
 use crate::output;
 
-/// What a URI asks for, with every name in its canonical spelling.
-struct Parsed {
-	id: String,
-	action: String,
+#[cfg(any(windows, target_os = "macos", test))]
+pub(crate) fn review_url(id: &JobId) -> String {
+	format!("retype://job/{id}")
 }
 
-/// Read `retype://job/<id>[?action=...]`.
-///
-/// The scheme, the object name and the action are identifiers a person may have
-/// typed, so they are read in either case and normalized. The job id itself is
-/// normalized by the same rule as a handle on the command line.
-fn parse(uri: &str) -> std::result::Result<Parsed, String> {
-	let Some((scheme, rest)) = uri.split_once("://") else {
-		return Err(format!("'{uri}' is not a retype:// URI"));
-	};
-
-	if !scheme.eq_ignore_ascii_case("retype") {
-		return Err(format!("'{uri}' is not a retype:// URI"));
+fn parse(uri: &str) -> Option<JobId> {
+	let (scheme, address) = uri.split_once("://")?;
+	let (path, action) = address.split_once('?').unwrap_or((address, "action=review"));
+	let (kind, id) = path.split_once('/')?;
+	if !scheme.eq_ignore_ascii_case("retype")
+		|| !kind.eq_ignore_ascii_case("job")
+		|| action != "action=review"
+		|| !id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+	{
+		return None;
 	}
-
-	let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
-	let mut parts = path.split('/').filter(|part| !part.is_empty());
-
-	match parts.next() {
-		Some(kind) if kind.eq_ignore_ascii_case("job") => {}
-		_ => return Err(format!("'{uri}' names no job")),
-	}
-
-	let Some(id) = parts.next() else {
-		return Err(format!("'{uri}' names no job id"));
-	};
-
-	let action = query
-		.split('&')
-		.find_map(|pair| {
-			let (name, value) = pair.split_once('=')?;
-			name.eq_ignore_ascii_case("action").then_some(value)
-		})
-		.unwrap_or("undo");
-
-	Ok(Parsed {
-		id: normalize(id),
-		action: normalize(action),
-	})
+	JobId::parse(id).ok()
 }
 
 pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
-	let Parsed { id, action } = match parse(uri) {
-		Ok(parsed) => parsed,
-		Err(message) => return Ok(ExitCode::from(output::fail(&Code::UsageArgs, message))),
-	};
-
-	match action.as_str() {
-		"undo" => crate::undo::run(state_dir, Some(&id), false, json),
-		"cancel" | "resolve" => {
-			let mut client = match crate::client::connect(state_dir) {
-				Ok(client) => client,
-				Err(_) => {
-					return Ok(ExitCode::from(output::fail(
-						&Code::IpcUnavailable,
-						"the daemon is not running; start it and try again",
-					)));
-				}
-			};
-
-			let method = match action.as_str() {
-				"cancel" => "jobs.cancel",
-				_ => "jobs.resolve",
-			};
-			let params = match action.as_str() {
-				"cancel" => json!({"id": id}),
-				_ => json!({"id": id, "mode": "now"}),
-			};
-
-			let answer = client.call(method, params)?;
-
-			if json {
-				output::success(answer);
-			} else if let Some(state) = answer.get("state").and_then(|value| value.as_str()) {
-				println!("{id}  {state}");
-			}
-
-			Ok(ExitCode::SUCCESS)
-		}
-		other => Ok(ExitCode::from(output::fail(
+	let Some(id) = parse(uri) else {
+		return Ok(ExitCode::from(output::fail(
 			&Code::UsageArgs,
-			format!("'{other}' is not an action this build handles; use undo, cancel or resolve"),
-		))),
+			"a retype URI can only open Review for one full job ID",
+		)));
+	};
+	if json {
+		return Ok(ExitCode::from(output::fail(
+			&Code::UsageConflict,
+			"Review needs a graphical dialog, not JSON mode",
+		)));
 	}
+	open_review(state_dir, &id)?;
+	Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn open_review(state_dir: &Path, id: &JobId) -> Result<()> {
+	Ok(crate::notify::review::open_job(state_dir, id)?)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn open_review(_: &Path, _: &JobId) -> Result<()> {
+	Err(
+		retype_core::error::Diagnostic::global(Code::Unsupported, "desktop Review is unavailable on this platform")
+			.into(),
+	)
 }
 
 #[cfg(test)]
 mod tests {
-	use super::parse;
+	use super::*;
+
+	const ID: &str = "01m6b4rararx3wrttkrgpp1783";
 
 	#[test]
-	fn a_uri_is_read_in_either_case() {
-		let parsed = parse("RETYPE://JOB/01M6B4RARARX3WrTTKRGPP1783?ACTION=UNDO").expect("a URI");
-
-		assert_eq!(parsed.id, "01m6b4rararx3wrttkrgpp1783");
-		assert_eq!(parsed.action, "undo");
+	fn review_links_name_one_full_job() {
+		let id = JobId::parse(ID).unwrap();
+		assert_eq!(parse(&review_url(&id)), Some(id.clone()));
+		assert_eq!(
+			parse(&format!("RETYPE://JOB/{}?action=review", ID.to_uppercase())),
+			Some(id)
+		);
 	}
 
 	#[test]
-	fn the_action_defaults_to_undo() {
-		let parsed = parse("retype://job/01m6b4rararx3wrttkrgpp1783").expect("a URI");
-
-		assert_eq!(parsed.action, "undo");
-	}
-
-	#[test]
-	fn a_uri_without_a_job_is_refused() {
-		assert!(parse("retype://photo/01m6b4rararx3wrttkrgpp1783").is_err());
-		assert!(parse("retype://job").is_err());
-		assert!(parse("https://job/01m6b4rararx3wrttkrgpp1783").is_err());
+	fn links_cannot_name_an_action_other_than_review_or_supply_other_parameters() {
+		for suffix in [
+			"?action=undo",
+			"?action=cancel",
+			"?action=resolve",
+			"?action=review&action=undo",
+			"?",
+			"#link",
+			"/another",
+			"/",
+			"?file=original",
+			"?action=review&yes=1",
+			" --yes",
+		] {
+			assert!(parse(&format!("retype://job/{ID}{suffix}")).is_none(), "{suffix}");
+		}
+		for address in [
+			"retype://job",
+			"retype://job/01m6",
+			"retype://job/../file",
+			"https://job/01m6",
+			"retype://job/%30",
+		] {
+			assert!(parse(address).is_none(), "{address}");
+		}
 	}
 }

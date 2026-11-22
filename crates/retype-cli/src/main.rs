@@ -183,7 +183,7 @@ enum Command {
 		fixtures: Option<std::path::PathBuf>,
 	},
 
-	/// Handle a retype:// link from a notification or a registered scheme
+	/// Open Review for a retype:// job link
 	#[command(hide = true)]
 	Uri {
 		/// The retype:// URI to handle

@@ -3,5 +3,5 @@ Type=Application
 Name=retype
 NoDisplay=true
 # GIO checks the executable before expanding escaped percent signs in paths.
-Exec=/usr/bin/env "@PREFIX@/bin/retype" uri %u
+Exec=/usr/bin/env "@PREFIX@/bin/retype" uri -- %u
 MimeType=x-scheme-handler/retype;

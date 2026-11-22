@@ -2020,9 +2020,13 @@ fn announce(shared: &Shared, ids: &[JobId]) {
 		return;
 	};
 
-	/* The dialog uses the current recovery records, not the notification's job summaries. */
+	/* A protocol link names one job, never an implicit batch. */
+	let job = match ids {
+		[id] => Some(id.clone()),
+		_ => None,
+	};
 	let state_dir = shared.state_dir.clone();
-	std::thread::spawn(move || channel.send(&message, &state_dir));
+	std::thread::spawn(move || channel.send(&message, &state_dir, job.as_ref()));
 }
 
 /// The record a job writes before it starts, so a client can see a job that is

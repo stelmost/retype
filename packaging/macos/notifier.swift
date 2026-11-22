@@ -63,7 +63,7 @@ func openURI(_ uri: String, finished: @escaping (Process) -> Void) throws -> Pro
 	}
 	let process = Process()
 	process.executableURL = cli
-	process.arguments = ["uri", uri, "--no-spawn"]
+	process.arguments = ["--no-spawn", "uri", "--", uri]
 	process.environment = try uriEnvironment()
 	process.standardInput = FileHandle.nullDevice
 	process.terminationHandler = { child in

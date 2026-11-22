@@ -321,7 +321,7 @@ def main():
                       'x-scheme-handler/retype']).strip() == 'retype-uri.desktop')
                 exec_line = next(line for line in desktop.read_text().splitlines() if line.startswith('Exec='))
                 check('installed URI handler targets the exact binary',
-                      shlex.split(exec_line.removeprefix('Exec=')) == ['/usr/bin/env', str(binary), 'uri', '%u'])
+                      shlex.split(exec_line.removeprefix('Exec=')) == ['/usr/bin/env', str(binary), 'uri', '--', '%u'])
             if macos:
                 app = prefix / 'share/retype/macos/retype.app'
                 notifier = app / 'Contents/MacOS/retype-notifier'

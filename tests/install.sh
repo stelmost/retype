@@ -169,7 +169,7 @@ if [ "$os" = unknown-linux-gnu ]; then
 		[ ! -s "$tmp/launched" ] || break
 		sleep 0.05
 	done
-	[ "$(<"$tmp/launched")" = "$(printf '%s\n' "$prefix/bin/retype" uri "$review_uri")" ]
+	[ "$(<"$tmp/launched")" = "$(printf '%s\n' "$prefix/bin/retype" uri -- "$review_uri")" ]
 	# A second prefix must not take over the current installation's global user definitions.
 	if env "${common[@]}" RETYPE_VERSION=v0.0.1-test bash "$root/packaging/install.sh" \
 		--prefix "$tmp/other-prefix" >"$tmp/ownership-failure.log" 2>&1; then

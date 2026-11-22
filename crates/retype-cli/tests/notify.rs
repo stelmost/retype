@@ -401,6 +401,29 @@ fn missing_recovery_before_review_makes_the_whole_batch_close_only() {
 }
 
 #[test]
+fn a_replaced_output_refuses_approved_undo_even_with_the_same_bytes() {
+	let fixture = Fixture::new(&["replaced.png"]);
+	fixture.rename("replaced.png", "replaced.webp");
+	fixture.wait_for_notification();
+	fixture.click("review");
+	assert!(fixture.wait_for_dialog().iter().any(|arg| arg == "Undo"));
+
+	let store = Store::open(&fixture.state);
+	let before = store.list().unwrap();
+	let saved = fixture.state.join("owned-output");
+	fs::rename(fixture.photos.join("replaced.webp"), &saved).unwrap();
+	fs::copy(&saved, fixture.photos.join("replaced.webp")).unwrap();
+	fixture.answer_dialog("undo");
+	wait_for("replacement refusal", || {
+		let text = fs::read_to_string(fixture.dir.path().join("daemon.err")).ok()?;
+		text.contains("changed since Review").then_some(())
+	});
+	fixture.assert_pixels(&["replaced.png", "replaced.webp"]);
+	assert_eq!(fs::read(saved).unwrap(), b"pixels");
+	assert_eq!(store.list().unwrap(), before);
+}
+
+#[test]
 fn a_changed_record_refuses_the_whole_approved_batch() {
 	let fixture = Fixture::new(&["f.png", "g.png"]);
 	fixture.rename("f.png", "f.webp");
@@ -525,4 +548,42 @@ fn a_conversion_without_a_notification_session_uses_the_log() {
 	);
 	fixture.assert_pixels(&["c.webp"]);
 	assert!(!fixture.dir.path().join("notified").exists(), "no notifier was run");
+}
+
+#[test]
+fn a_full_local_review_link_does_not_restore_without_a_desktop() {
+	let fixture = Fixture::start(&["headless.png"], Session::NoDisplay);
+	fixture.rename("headless.png", "headless.webp");
+	let store = Store::open(&fixture.state);
+	let before = wait_for("settled recovery", || {
+		let records = store.list().unwrap();
+		records
+			.first()
+			.is_some_and(|record| record.retention_started.is_some())
+			.then_some(records)
+	});
+	let uri = format!("retype://job/{}", before[0].id);
+
+	let launch = |extra: &[&str]| {
+		retype()
+			.arg("--state-dir")
+			.arg(&fixture.state)
+			.args(["uri", "--", &uri])
+			.args(extra)
+			.env_remove("DISPLAY")
+			.env_remove("WAYLAND_DISPLAY")
+			.stdin(Stdio::null())
+			.output()
+			.unwrap()
+	};
+	let headless = launch(&[]);
+	assert!(!headless.status.success(), "{headless:?}");
+	assert!(String::from_utf8_lossy(&headless.stderr).contains("Review needs a local graphical session"));
+	let extra = launch(&["--state-dir"]);
+	assert!(!extra.status.success(), "{extra:?}");
+	assert!(String::from_utf8_lossy(&extra.stderr).contains("unexpected argument"));
+
+	fixture.assert_pixels(&["headless.png", "headless.webp"]);
+	assert_eq!(store.list().unwrap(), before);
+	assert!(!fixture.dir.path().join("dialog").exists());
 }
