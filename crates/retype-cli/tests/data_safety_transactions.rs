@@ -383,12 +383,7 @@ fn windows_conversion_keeps_empty_and_zone_streams_as_final_done_outcomes() {
 			let record: serde_json::Value = serde_json::from_str(line).unwrap();
 			record["source_disposition"]["state"] != "pending"
 		}));
-		let restarted = Server::open(&state).unwrap();
-		assert!(
-			restarted.recoveries().idle(),
-			"stream retention must not queue recovery"
-		);
-		restarted.pool().stop();
+		let restarted = restart(dir.path());
 		assert_eq!(*restarted.shared().jobs.lock().unwrap(), [job]);
 		assert_eq!(fs::read_to_string(journal).unwrap(), before);
 		assert_eq!(fs::read(stream_path(&source, name)).unwrap(), contents);
