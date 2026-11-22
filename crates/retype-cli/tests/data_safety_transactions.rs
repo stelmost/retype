@@ -384,7 +384,10 @@ fn windows_conversion_keeps_empty_and_zone_streams_as_final_done_outcomes() {
 			record["source_disposition"]["state"] != "pending"
 		}));
 		let restarted = Server::open(&state).unwrap();
-		restarted.recoveries().wait();
+		assert!(
+			restarted.recoveries().idle(),
+			"stream retention must not queue recovery"
+		);
 		restarted.pool().stop();
 		assert_eq!(*restarted.shared().jobs.lock().unwrap(), [job]);
 		assert_eq!(fs::read_to_string(journal).unwrap(), before);

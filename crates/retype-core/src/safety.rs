@@ -1,6 +1,8 @@
 //! Stable input snapshots and preservation-first filesystem ownership.
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(any(not(windows), test))]
+use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 

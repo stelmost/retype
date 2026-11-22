@@ -196,6 +196,7 @@ impl Fixture {
 			.args(["daemon", "--detached", "--state-dir"])
 			.arg(self.state())
 			.env("RETYPE_CONFIG", self.root().join("retype.toml"))
+			.env("RETYPE_TEST_SESSION", "terminal")
 			.env(ROOT_ENV, self.root())
 			.env(TOKEN_ENV, &self.token)
 			.env_remove(CHECKPOINT_ENV)

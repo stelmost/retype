@@ -46,7 +46,7 @@ The native runners require all fourteen `daemon_recovery` cases. To run that mat
 cargo test -p retype-cli --locked --features test-checkpoints --test daemon_recovery --target-dir target/test-checkpoints -- --nocapture
 ```
 
-The matrix interrupts the actual daemon during direct and watched native archive conversion, publication, source disposition and undo. Restart and retry must preserve the original backup, refuse replacement sources and outputs, leave unrelated files unchanged and retain orphaned claim identities and bytes. A separate case refuses checkpoints outside the token-marked synthetic fixture. Cleanup uses the production path qualification, without fixture authorization overrides. These process crashes supplement core and guest-interruption tests; they do not discard the filesystem cache.
+The matrix interrupts the actual daemon during direct and watched native archive conversion, publication, source disposition and undo. Restart and retry must preserve the original backup, refuse replacement sources and outputs, leave unrelated files unchanged and retain orphaned claim identities and bytes. A separate case refuses checkpoints outside the token-marked synthetic fixture. The debug daemons use a controlled login state, so the matrix does not qualify native desktop login. Cleanup uses the production path qualification, without fixture authorization overrides. These process crashes supplement core and guest-interruption tests; they do not discard the filesystem cache.
 
 ## Actual disk exhaustion
 
