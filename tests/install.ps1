@@ -317,12 +317,13 @@ try {
 	Check 'State under managed share refuses overlapping update without changing bytes' ((Installed-Snapshot) -ceq $previous)
 	$env:RETYPE_STATE_DIR = $State
 
-	$registryBefore = Clone $Registry
+	$uriBefore = $Registry[$UriKey]
 	$Registry[$UriKey] = @([ordered]@{ Name = ''; Values = @([ordered]@{ Name = ''; Kind = 'String'; Value = 'foreign handler' }) })
 	$foreign = Installed-Snapshot
 	Refused 'foreign-uri' 'foreign or changed URI registration'
 	Check 'Foreign URI definition is never replaced' ((Installed-Snapshot) -ceq $foreign)
-	$Registry = @{}; foreach ($property in $registryBefore.PSObject.Properties) { $Registry[$property.Name] = $property.Value }
+	$Registry[$UriKey] = $uriBefore
+	Check 'Resetting the URI fixture restores the exact installation baseline' ((Installed-Snapshot) -ceq $previous)
 	$receiptPath = Join-Path $Prefix '.retype-install.json'
 	$receiptBytes = [IO.File]::ReadAllBytes($receiptPath)
 	$forged = [Text.Encoding]::UTF8.GetString($receiptBytes).TrimStart([char]0xfeff) | ConvertFrom-Json
