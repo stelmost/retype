@@ -23,7 +23,7 @@ fn windows_installation_rolls_back_failed_publications() {
 		.arg(root.join("tests/install.ps1"))
 		.arg("-Binary")
 		.arg(env!("CARGO_BIN_EXE_retype"));
-	let output = commands::bounded(&mut command, Duration::from_secs(60)).unwrap();
+	let output = commands::bounded(&mut command, Duration::from_secs(180)).unwrap();
 	assert!(output.status.success(), "{}\n{}", output.stdout, output.stderr);
 	assert!(output.stdout.contains("Windows installer tests passed"));
 }

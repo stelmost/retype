@@ -57,7 +57,7 @@ Private scratch data and isolated daemon state are retained for inspection. Clea
 | `RETYPE_TEST_REPORT_DIR` | Absolute report parent; defaults to `target/test-reports` |
 | `RETYPE_TEST_TEMP_DIR` | Absolute writable scratch parent; use a short local path on Unix |
 
-Compilation has its own deadline before the shared execution budget starts. Each nextest test is terminated after 60 seconds; a phase not reached within the remaining suite budget is incomplete. Linux uses GNU `timeout`; macOS uses system Perl without `gtimeout`. Bounded commands have closed stdin; tests requiring a terminal create one themselves.
+Compilation has its own deadline before the shared execution budget starts. The nextest deadline is 60 seconds per test except for the Windows installer fixture, which runs repeated archive publications with debug executables. The fixture has a 180-second child deadline and a 210-second nextest deadline. A phase not reached within the remaining suite budget is incomplete. Linux uses GNU `timeout`; macOS uses system Perl without `gtimeout`. Bounded commands have closed stdin; tests requiring a terminal create one themselves.
 
 ## Standalone checks and diagnostics
 

@@ -14,3 +14,7 @@ test(=a_real_watched_heic_conversion_and_undo_preserve_the_original) |
 test(=a_real_direct_heic_conversion_and_undo_follow_watched_disposition)
 '''
 priority = 100
+
+[[profile.platform.overrides]]
+filter = 'test(=windows_installation_rolls_back_failed_publications)'
+slow-timeout = { period = '70s', terminate-after = 3 }
