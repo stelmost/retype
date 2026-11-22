@@ -271,7 +271,11 @@ fn a_conversion_sends_one_notification_with_review_as_its_only_action() {
 
 	let recorded = fixture.wait_for_notification();
 	assert!(recorded.contains("--app-name"), "{recorded}");
-	assert!(recorded.contains("--desktop-entry\nretype-uri\n"), "{recorded}");
+	assert!(
+		recorded.contains("--hint\nstring:desktop-entry:retype-uri\n"),
+		"{recorded}"
+	);
+	assert!(!recorded.contains("--desktop-entry\n"), "{recorded}");
 	assert!(recorded.contains("--wait"), "{recorded}");
 	assert!(
 		recorded.contains("--expire-time\n0\n"),

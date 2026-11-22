@@ -473,8 +473,9 @@ fn notify_send(message: &Message, with_action: bool) -> std::io::Result<bool> {
 	command.args([
 		"--app-name",
 		"retype",
-		"--desktop-entry",
-		"retype-uri",
+		/* Debian 13's notify-send supports the hint, not the dedicated option. */
+		"--hint",
+		"string:desktop-entry:retype-uri",
 		"--expire-time",
 		expiry,
 	]);
