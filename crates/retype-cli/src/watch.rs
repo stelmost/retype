@@ -284,7 +284,7 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 	let mut resync = true;
 	let mut stopped = crate::daemon::signals::Seen::now();
 	crate::daemon::signals::install();
-	loop {
+	'follow: loop {
 		let (signal, next) = stopped.asked();
 		stopped = next;
 		if signal != crate::daemon::signals::Asked::Nothing {
@@ -431,9 +431,22 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 				});
 				loop {
 					match receive.recv_timeout(Duration::from_millis(100)) {
-						Ok(result) => {
-							let _ = result?;
-							break;
+						Ok(Ok(crate::jobs::PromptOutcome::Finished)) => break,
+						Ok(Ok(crate::jobs::PromptOutcome::Refresh)) => {
+							resync = true;
+							continue 'follow;
+						}
+						Ok(Err(error)) => {
+							if matches!(error, crate::error::Error::DaemonUnavailable)
+								|| matches!(&error, crate::error::Error::Client(error) if error.is_disconnected())
+							{
+								eprintln!(
+									"retype: connection lost during prompt; refreshing job state without replaying the answer"
+								);
+								resync = true;
+								continue 'follow;
+							}
+							return Err(error);
 						}
 						Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
 							return Err(std::io::Error::other("watch prompt stopped unexpectedly").into());

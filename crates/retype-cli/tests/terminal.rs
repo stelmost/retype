@@ -53,7 +53,7 @@ impl Fixture {
 			terminal: None,
 		}
 	}
-	fn start(&mut self) {
+	fn start(&mut self, options: &[&str]) {
 		let (mut master, mut slave) = (-1, -1);
 		assert_eq!(
 			unsafe {
@@ -73,10 +73,12 @@ impl Fixture {
 		command
 			.arg("watch")
 			.arg(self.root.path())
-			.args(["--no-spawn", "--state-dir"])
+			.args(options)
+			.arg("--state-dir")
 			.arg(&self.state)
 			.env("RETYPE_CONFIG", &self.config)
 			.env("RETYPE_TEST_SESSION", "terminal")
+			.env_remove("RETYPE_NO_SPAWN")
 			.stdin(slave.try_clone().unwrap())
 			.stdout(slave.try_clone().unwrap())
 			.stderr(slave);
@@ -96,6 +98,9 @@ impl Fixture {
 			libc::fcntl(terminal.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
 		}
 		self.terminal = Some(terminal);
+		self.wait_for_prompt();
+	}
+	fn wait_for_prompt(&mut self) {
 		let deadline = Instant::now() + Duration::from_secs(10);
 		let mut output = String::new();
 		while !output.contains("[n]ow") {
@@ -142,7 +147,7 @@ impl Drop for Fixture {
 #[test]
 fn interrupt_during_a_real_prompt_detaches_and_preserves_the_pending_ask() {
 	let mut fixture = Fixture::new();
-	fixture.start();
+	fixture.start(&["--no-spawn"]);
 	fixture.detach();
 	let job = retype_cli::client::connect(&fixture.state)
 		.unwrap()
@@ -155,7 +160,7 @@ fn interrupt_during_a_real_prompt_detaches_and_preserves_the_pending_ask() {
 #[test]
 fn terminal_eof_is_not_consent_and_stale_prompt_does_not_resolve_twice() {
 	let mut fixture = Fixture::new();
-	fixture.start();
+	fixture.start(&["--no-spawn"]);
 	fixture.terminal.as_mut().unwrap().write_all(&[4]).unwrap();
 	std::thread::sleep(Duration::from_millis(100));
 	assert_eq!(
@@ -169,7 +174,7 @@ fn terminal_eof_is_not_consent_and_stale_prompt_does_not_resolve_twice() {
 	fixture.detach();
 
 	let mut fixture = Fixture::new();
-	fixture.start();
+	fixture.start(&["--no-spawn"]);
 	retype_cli::client::connect(&fixture.state)
 		.unwrap()
 		.jobs_cancel(&fixture.job)
@@ -179,4 +184,49 @@ fn terminal_eof_is_not_consent_and_stale_prompt_does_not_resolve_twice() {
 	assert!(!fixture.root.path().join("original.zip").exists());
 	assert!(fixture.watch.as_mut().unwrap().try_wait().unwrap().is_none());
 	fixture.detach();
+}
+
+#[test]
+fn a_crash_during_a_prompt_refreshes_without_replaying_the_answer() {
+	let mut fixture = Fixture::new();
+	fixture.start(&[]);
+	let pid = retype_cli::client::connect(&fixture.state)
+		.unwrap()
+		.status()
+		.unwrap()
+		.pid;
+	assert_eq!(unsafe { libc::kill(pid as i32, libc::SIGKILL) }, 0);
+	fixture.terminal.as_mut().unwrap().write_all(b"n\n").unwrap();
+	fixture.wait_for_prompt();
+
+	let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+	assert_ne!(client.status().unwrap().pid, pid);
+	let job = client.jobs_get(&fixture.job).unwrap();
+	assert_eq!(job.state, retype_core::job::JobState::NeedsAttention);
+	assert!(fixture.root.path().join("original.tar").is_file());
+	assert!(!fixture.root.path().join("original.zip").exists());
+	fixture.detach();
+}
+
+#[test]
+fn a_stale_parked_decision_cannot_cancel_or_resolve_the_current_job() {
+	let fixture = Fixture::new();
+	let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+	let job = client.jobs_get(&fixture.job).unwrap();
+	let previous = Some(retype_ipc::ParkedVersion {
+		state: job.state,
+		updated: job.updated - 1,
+	});
+	assert_eq!(
+		client.jobs_cancel_matching(&fixture.job, previous).unwrap_err().code(),
+		Some(&retype_core::error::Code::JobState)
+	);
+	assert_eq!(
+		client
+			.jobs_resolve_matching(&fixture.job, retype_ipc::ResolveMode::Now, false, previous)
+			.unwrap_err()
+			.code(),
+		Some(&retype_core::error::Code::JobState)
+	);
+	assert_eq!(client.jobs_get(&fixture.job).unwrap(), job);
 }

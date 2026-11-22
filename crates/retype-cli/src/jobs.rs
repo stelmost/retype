@@ -414,17 +414,28 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 		return Ok(ExitCode::SUCCESS);
 	}
 
-	interactive_jobs(state_dir, &parked, json, allow_spawn)
+	interactive_jobs(state_dir, &parked, json, allow_spawn)?;
+	Ok(ExitCode::SUCCESS)
 }
 
-pub(crate) fn interactive_jobs(state_dir: &Path, parked: &[JobId], json: bool, allow_spawn: bool) -> Result<ExitCode> {
+pub(crate) enum PromptOutcome {
+	Finished,
+	Refresh,
+}
+
+pub(crate) fn interactive_jobs(
+	state_dir: &Path,
+	parked: &[JobId],
+	json: bool,
+	allow_spawn: bool,
+) -> Result<PromptOutcome> {
 	use std::io::{BufRead, Write};
 	let mut stdin = std::io::stdin().lock();
 
 	for id in parked {
-		let job = {
+		let (job, daemon_pid) = {
 			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-			client.jobs_get(id.as_str())?
+			(client.jobs_get(id.as_str())?, client.daemon().map(|daemon| daemon.pid))
 		};
 
 		if !matches!(job.state, JobState::Pending | JobState::NeedsAttention) {
@@ -440,7 +451,7 @@ pub(crate) fn interactive_jobs(state_dir: &Path, parked: &[JobId], json: bool, a
 
 			let mut line = String::new();
 			if stdin.read_line(&mut line)? == 0 {
-				return Ok(ExitCode::SUCCESS);
+				return Ok(PromptOutcome::Finished);
 			}
 
 			let key = line.trim().chars().next().unwrap_or_default();
@@ -449,34 +460,15 @@ pub(crate) fn interactive_jobs(state_dir: &Path, parked: &[JobId], json: bool, a
 				continue;
 			};
 
-			if matches!(action, Action::Now | Action::Convert | Action::Refuse) {
-				let current = client::connect_or_spawn(state_dir, false)?.jobs_get(id.as_str())?;
-				if current.state != job.state || current.updated != job.updated {
-					eprintln!("retype: job {id} changed while prompting; check its current state");
-					break;
-				}
-			}
 			match action {
-				Action::Quit => return Ok(ExitCode::SUCCESS),
+				Action::Quit => return Ok(PromptOutcome::Finished),
 				Action::Skip => break,
-				Action::Now => {
-					let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-					let answer = client.jobs_resolve(id.as_str(), retype_ipc::ResolveMode::Now, false)?;
-					answer_state(&state_of(answer.state));
-					break;
-				}
-				Action::Convert => {
-					let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-					let answer = client.jobs_resolve(id.as_str(), retype_ipc::ResolveMode::Convert, false)?;
-					answer_state(&state_of(answer.state));
-					break;
-				}
-				Action::Refuse => {
-					let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-					let answer = client.jobs_cancel(id.as_str())?;
-					answer_state(&answer.state);
-					if let Some(warning) = &answer.warning {
-						eprintln!("retype: {warning}");
+				_ => {
+					if matches!(
+						answer_prompt(state_dir, action, &job, daemon_pid)?,
+						PromptOutcome::Refresh
+					) {
+						return Ok(PromptOutcome::Refresh);
 					}
 					break;
 				}
@@ -484,7 +476,48 @@ pub(crate) fn interactive_jobs(state_dir: &Path, parked: &[JobId], json: bool, a
 		}
 	}
 
-	Ok(ExitCode::SUCCESS)
+	Ok(PromptOutcome::Finished)
+}
+
+fn answer_prompt(state_dir: &Path, action: Action, job: &Job, daemon_pid: Option<u32>) -> Result<PromptOutcome> {
+	let mut client = client::connect(state_dir)?;
+	if client.daemon().map(|daemon| daemon.pid) != daemon_pid {
+		eprintln!("retype: the daemon changed while prompting; the answer was not sent");
+		return Ok(PromptOutcome::Refresh);
+	}
+	let expected = Some(retype_ipc::ParkedVersion {
+		state: job.state,
+		updated: job.updated,
+	});
+	let id = job.id.as_str();
+	let result = match action {
+		Action::Now | Action::Convert => {
+			let mode = if action == Action::Now {
+				retype_ipc::ResolveMode::Now
+			} else {
+				retype_ipc::ResolveMode::Convert
+			};
+			client
+				.jobs_resolve_matching(id, mode, false, expected)
+				.map(|answer| answer_state(&state_of(answer.state)))
+		}
+		Action::Refuse => client
+			.jobs_cancel_matching(id, expected)
+			.map(|answer| answer_state(&answer.state)),
+		Action::Quit | Action::Skip => unreachable!("only decisions are sent to the daemon"),
+	};
+	if let Err(retype_ipc::ClientError::Rpc(error)) = &result {
+		if error
+			.detail
+			.as_deref()
+			.is_some_and(|detail| detail["decision"] == "stale")
+		{
+			eprintln!("retype: {id}: {}", error.message);
+			return Ok(PromptOutcome::Refresh);
+		}
+	}
+	result?;
+	Ok(PromptOutcome::Finished)
 }
 
 /// What one key asks for.

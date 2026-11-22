@@ -186,6 +186,14 @@ pub struct JobSubmitted {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobCancel {
 	pub id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub expected: Option<ParkedVersion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParkedVersion {
+	pub state: JobState,
+	pub updated: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +236,8 @@ pub struct JobResolve {
 	pub mode: ResolveMode,
 	#[serde(default)]
 	pub force: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub expected: Option<ParkedVersion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

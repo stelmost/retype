@@ -19,6 +19,32 @@ use crate::daemon::machine;
 use crate::daemon::watcher::Shared;
 use crate::error::Result;
 
+fn stale_parked_version() -> WireError {
+	let mut error = WireError::new(
+		Code::JobState,
+		"the job changed while prompting; check its current state",
+	);
+	error.detail = Some(Box::new(json!({"decision": "stale"})));
+	error
+}
+
+fn check_parked_version(request: &Request, job: Option<&Job>) -> std::result::Result<(), WireError> {
+	let Some(expected) = request.params.get("expected") else {
+		return Ok(());
+	};
+	let expected: retype_ipc::ParkedVersion = serde_json::from_value(expected.clone())
+		.map_err(|_| WireError::new(Code::IpcMethod, "expected needs a parked job state and update time"))?;
+	if job.is_some_and(|job| {
+		matches!(job.state, JobState::Pending | JobState::NeedsAttention)
+			&& job.state == expected.state
+			&& job.updated == expected.updated
+	}) {
+		Ok(())
+	} else {
+		Err(stale_parked_version())
+	}
+}
+
 #[cfg(test)]
 #[path = "server_tests.rs"]
 mod tests;
@@ -576,7 +602,10 @@ impl Server {
 			));
 		};
 
-		if let Some(partial) = self.find(id.as_str()).filter(|job| job.state == JobState::Partial) {
+		if let Some(partial) = self
+			.find(id.as_str())
+			.filter(|job| job.state == JobState::Partial && request.params.get("expected").is_none())
+		{
 			return self.cancel_partial(request.id, partial);
 		}
 		let _guard = match self.shared.lock_parked_admission() {
@@ -591,10 +620,13 @@ impl Server {
 
 		// A parked job never reached the queue, so it is cancelled in the record rather
 		// than by stopping anything, `docs/deferral.md` §8.
-		if let Some(parked) = self
+		let parked = self
 			.find(id.as_str())
-			.filter(|job| matches!(job.state, JobState::Pending | JobState::NeedsAttention))
-		{
+			.filter(|job| matches!(job.state, JobState::Pending | JobState::NeedsAttention));
+		if let Err(error) = check_parked_version(request, parked.as_ref()) {
+			return Ok(Response::error(request.id, error));
+		}
+		if let Some(parked) = parked {
 			let mut cancelled = parked;
 			cancel_unfinished_outputs(&mut cancelled);
 			if let Err(error) = crate::daemon::watcher::publish_checked(&self.shared, &cancelled) {
@@ -809,6 +841,9 @@ impl Server {
 			Err(error) => return Ok(Response::error(request.id, error)),
 		};
 
+		if let Err(error) = check_parked_version(request, Some(&job)) {
+			return Ok(Response::error(request.id, error));
+		}
 		let parked = match job.state {
 			JobState::Pending | JobState::NeedsAttention => job.parked.clone(),
 			other => {
@@ -864,13 +899,7 @@ impl Server {
 				request.id,
 				WireError::new(Code::JobState, "the queue is full, so nothing was started"),
 			)),
-			Ok(Admission::Stale) => Ok(Response::error(
-				request.id,
-				WireError::new(
-					Code::JobState,
-					"the job changed while it was being resolved; check its current state",
-				),
-			)),
+			Ok(Admission::Stale) => Ok(Response::error(request.id, stale_parked_version())),
 			Err(error) if error.code() == Code::JobResumeUnavailable => Ok(Response::error(
 				request.id,
 				WireError::new(error.code(), format!("job {} did not start: {error}", job.id)),
@@ -1477,6 +1506,7 @@ impl Server {
 				"jobs.list.summary".to_string(),
 				"jobs.submit.id".to_string(),
 				"jobs.submit.config".to_string(),
+				"jobs.parked.version".to_string(),
 				"jobs.list.pagination".to_string(),
 				"undo.list".to_string(),
 				"recovery".to_string(),

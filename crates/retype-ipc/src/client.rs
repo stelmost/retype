@@ -213,7 +213,22 @@ impl Client {
 	}
 
 	pub fn jobs_cancel(&mut self, id: &str) -> Result<crate::JobCancelled, ClientError> {
-		self.typed("jobs.cancel", crate::JobCancel { id: id.to_string() })
+		self.jobs_cancel_matching(id, None)
+	}
+
+	pub fn jobs_cancel_matching(
+		&mut self,
+		id: &str,
+		expected: Option<crate::ParkedVersion>,
+	) -> Result<crate::JobCancelled, ClientError> {
+		self.require_parked_version(expected)?;
+		self.typed(
+			"jobs.cancel",
+			crate::JobCancel {
+				id: id.to_string(),
+				expected,
+			},
+		)
 	}
 
 	pub fn jobs_resume(&mut self, id: &str, force: bool) -> Result<crate::JobResumed, ClientError> {
@@ -232,14 +247,40 @@ impl Client {
 		mode: crate::ResolveMode,
 		force: bool,
 	) -> Result<crate::JobResolved, ClientError> {
+		self.jobs_resolve_matching(id, mode, force, None)
+	}
+
+	pub fn jobs_resolve_matching(
+		&mut self,
+		id: &str,
+		mode: crate::ResolveMode,
+		force: bool,
+		expected: Option<crate::ParkedVersion>,
+	) -> Result<crate::JobResolved, ClientError> {
+		self.require_parked_version(expected)?;
 		self.typed(
 			"jobs.resolve",
 			crate::JobResolve {
 				id: id.to_string(),
 				mode,
 				force,
+				expected,
 			},
 		)
+	}
+
+	fn require_parked_version(&self, expected: Option<crate::ParkedVersion>) -> Result<(), ClientError> {
+		if expected.is_some()
+			&& !self
+				.daemon
+				.as_ref()
+				.is_some_and(|daemon| daemon.features.iter().any(|name| name == "jobs.parked.version"))
+		{
+			return Err(ClientError::Protocol(
+				"restart the daemon with this build before answering a prompt".into(),
+			));
+		}
+		Ok(())
 	}
 
 	pub fn undo(&mut self, request: &crate::UndoRequest) -> Result<crate::Undone, ClientError> {
