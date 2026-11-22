@@ -204,9 +204,14 @@ try {
 		Check 'Native registry round-trip preserves the default value and empty child key' ((Snapshot (Native-Read-RetypeRegistryTree $privateKey)) -ceq (Snapshot $tree))
 		$key = New-Item -Path $RunKey
 		$key.SetValue('other-application', 'untouched')
-		Native-Write-RetypeStartup ([ordered]@{ Kind = 'String'; Value = 'fixture startup' })
+		$startup = [ordered]@{ Kind = 'ExpandString'; Value = '%USERPROFILE%\fixture startup' }
+		Native-Write-RetypeStartup $startup
+		Check 'Native startup write preserves the exact value and kind' (
+			(Snapshot (Native-Read-RetypeStartup)) -ceq (Snapshot $startup)
+		)
 		Check 'Native startup write preserves other applications' ((Get-Item $RunKey).GetValue('other-application') -eq 'untouched')
 		Native-Write-RetypeStartup $null
+		Check 'Native startup removal drops the owned value' ($null -eq (Native-Read-RetypeStartup))
 		Check 'Native startup removal preserves other applications' ((Get-Item $RunKey).GetValue('other-application') -eq 'untouched')
 	} finally {
 		if (Test-Path $privateKey) {

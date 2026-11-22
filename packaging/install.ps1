@@ -199,8 +199,9 @@ function Assert-RetypeWindowsTrust {
 		if ($null -eq $Value) {
 			if ($null -ne (Read-RetypeStartup)) { Remove-ItemProperty -LiteralPath $RunKey -Name $AppId }
 		} else {
-			$key = if (Test-Path -LiteralPath $RunKey) { Get-Item -LiteralPath $RunKey } else { New-Item -Path $RunKey }
-			$key.SetValue($AppId, $Value.Value, [Microsoft.Win32.RegistryValueKind]$Value.Kind)
+			if (-not (Test-Path -LiteralPath $RunKey)) { New-Item -Path $RunKey | Out-Null }
+			New-ItemProperty -LiteralPath $RunKey -Name $AppId -PropertyType $Value.Kind `
+				-Value $Value.Value -Force | Out-Null
 		}
 	}
 
