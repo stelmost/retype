@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -23,6 +24,9 @@ use crate::value::Value;
 
 /// The file a directory speaks through.
 pub const FILE: &str = ".retype.toml";
+const MAX_POLICY_BYTES: u64 = 64 * 1024;
+const MAX_PATTERN_BYTES: usize = 256;
+const MAX_PATTERNS: usize = 128;
 
 /// What a directory asks for. Every field is an addition to the default, which is
 /// "convert everything it can, and ask when it is expensive".
@@ -71,24 +75,50 @@ impl Policy {
 				true => relative.to_string_lossy(),
 				false => name.into(),
 			};
+			#[cfg(windows)]
+			let target = target.replace('\\', "/");
 
 			glob(pattern, target.as_ref())
 		})
 	}
 
+	pub fn allows_path(&self, path: &Path) -> bool {
+		let directory = self.path.parent().unwrap_or(Path::new(""));
+		let relative = path.strip_prefix(directory).unwrap_or(path);
+		let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+		self.allows(name, relative)
+	}
+
 	/// Read a directory's file, or answer with the policy of a directory that has none.
 	pub fn open(directory: &Path) -> Result<Self> {
-		let path = directory.join(FILE);
+		Self::at(directory, directory)
+	}
 
-		let text = match fs::read_to_string(&path) {
-			Ok(text) => text,
-			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-				return Ok(Self::open_ended(&path));
+	/// Read the current nearest policy; only an absent file lets the search continue.
+	pub fn at(root: &Path, directory: &Path) -> Result<Self> {
+		if !directory.starts_with(root) {
+			return Err(io::Error::other("the file is outside the originating watch").into());
+		}
+		for ancestor in directory.ancestors().take_while(|ancestor| ancestor.starts_with(root)) {
+			if let Some(policy) = Self::read(&ancestor.join(FILE))? {
+				return Ok(policy);
 			}
-			Err(error) => return Err(Error::Io(error)),
-		};
+		}
+		Ok(Self::open_ended(&root.join(FILE)))
+	}
 
-		Self::parse(&text, &path)
+	fn read(path: &Path) -> Result<Option<Self>> {
+		let file = match crate::safety::regular_file(path) {
+			Ok(file) => file,
+			Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+			Err(error) => return Err(io::Error::new(error.kind(), format!("{}: {error}", path.display())).into()),
+		};
+		let mut text = String::new();
+		file.take(MAX_POLICY_BYTES + 1).read_to_string(&mut text)?;
+		if text.len() as u64 > MAX_POLICY_BYTES {
+			return Err(policy_limit(path, "directory policy is too large"));
+		}
+		Self::parse(&text, path).map(Some)
 	}
 
 	fn parse(text: &str, path: &Path) -> Result<Self> {
@@ -150,6 +180,14 @@ impl Policy {
 			)));
 		}
 
+		if document.patterns.len() > MAX_PATTERNS
+			|| document
+				.patterns
+				.iter()
+				.any(|pattern| pattern.len() > MAX_PATTERN_BYTES)
+		{
+			return Err(policy_limit(path, "too many or overly long directory patterns"));
+		}
 		policy.patterns = document.patterns;
 		policy.deny = document.deny;
 		policy.limits = document.limits;
@@ -243,7 +281,8 @@ pub fn nearest(root: &Path, directory: &Path) -> PathBuf {
 	loop {
 		let candidate = at.join(FILE);
 
-		if candidate.exists() {
+		/* An unreadable policy is not the same as no policy. */
+		if !fs::symlink_metadata(&candidate).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
 			return candidate;
 		}
 
@@ -277,7 +316,9 @@ pub struct Cache {
 impl Cache {
 	pub fn policy(&self, root: &Path, directory: &Path) -> std::sync::Arc<Cached> {
 		let path = nearest(root, directory);
-		let modified = fs::metadata(&path).and_then(|metadata| metadata.modified()).ok();
+		let modified = fs::symlink_metadata(&path)
+			.and_then(|metadata| metadata.modified())
+			.ok();
 
 		if let Ok(entries) = self.entries.lock() {
 			if let Some((stamp, cached)) = entries.get(&path) {
@@ -287,10 +328,7 @@ impl Cache {
 			}
 		}
 
-		let cached = std::sync::Arc::new(match path.exists() {
-			true => Policy::open(path.parent().unwrap_or(Path::new(""))).map_err(|error| error.to_string()),
-			false => Ok(Policy::open_ended(&path)),
-		});
+		let cached = std::sync::Arc::new(Policy::at(root, directory).map_err(|error| error.to_string()));
 
 		if let Ok(mut entries) = self.entries.lock() {
 			entries.insert(path, (modified, std::sync::Arc::clone(&cached)));
@@ -330,38 +368,30 @@ struct DeferralKeys {
 	keys: BTreeMap<String, toml::Value>,
 }
 
-/// A glob, as `patterns` spells one: `*` for anything but a separator, `**` for
-/// anything, `?` for one character, and everything else literal.
-pub fn glob(pattern: &str, text: &str) -> bool {
-	let pattern: Vec<char> = pattern.chars().collect();
-	let text: Vec<char> = text.chars().collect();
-
-	matches(&pattern, &text)
+fn policy_limit(path: &Path, message: &str) -> Error {
+	Diagnostic::global(Code::CfgValidation, format!("{}: {message}", path.display())).into()
 }
 
-fn matches(pattern: &[char], text: &[char]) -> bool {
-	match pattern.first() {
-		None => text.is_empty(),
-		Some('*') => match pattern.get(1) {
-			// `**` crosses directories; a single `*` stops at a separator.
-			Some('*') => (0..=text.len()).any(|start| matches(&pattern[2..], &text[start..])),
-			_ => {
-				for start in 0..=text.len() {
-					if start > 0 && text[start - 1] == '/' {
-						break;
-					}
-
-					if matches(&pattern[1..], &text[start..]) {
-						return true;
-					}
-				}
-
-				false
+/// Match each pattern prefix against every text prefix once, without recursive backtracking.
+pub fn glob(pattern: &str, text: &str) -> bool {
+	let text: Vec<char> = text.chars().collect();
+	let mut matched = vec![false; text.len() + 1];
+	matched[0] = true;
+	let mut pattern = pattern.chars().peekable();
+	while let Some(token) = pattern.next() {
+		if token == '*' {
+			let crosses_directory = pattern.next_if_eq(&'*').is_some();
+			for (at, ch) in text.iter().enumerate() {
+				matched[at + 1] |= (crosses_directory || *ch != '/') && matched[at];
 			}
-		},
-		Some('?') => matches!(text.first(), Some(character) if *character != '/') && matches(&pattern[1..], &text[1..]),
-		Some(literal) => text.first() == Some(literal) && matches(&pattern[1..], &text[1..]),
+		} else {
+			for (at, ch) in text.iter().enumerate().rev() {
+				matched[at + 1] = matched[at] && (token == *ch || (token == '?' && *ch != '/'));
+			}
+			matched[0] = false;
+		}
 	}
+	matched[text.len()]
 }
 
 #[cfg(test)]
@@ -370,6 +400,14 @@ mod tests {
 	use crate::intent;
 	use crate::registry::Registry;
 	use crate::resolve::{self, Source};
+
+	#[test]
+	fn repetitive_wildcards_do_not_backtrack() {
+		let text = "a".repeat(200);
+		assert!(!glob(&format!("{}z", "*".repeat(100)), &text));
+		assert!(glob("**/a?", "a/b/a😀"));
+		assert!(!glob("x?y", "x/y"));
+	}
 
 	fn directory(text: &str) -> Policy {
 		Policy::parse(text, Path::new("/photos/.retype.toml")).expect("a valid policy")

@@ -140,13 +140,11 @@ impl Sighting {
 	}
 }
 
-/// Bounded identity map with insertion-order eviction.
+/// One entry per tracked file, kept until a filesystem observation invalidates it.
 #[derive(Debug)]
 pub struct Correlator {
-	capacity: usize,
 	by_identity: HashMap<Identity, PathBuf>,
 	by_path: HashMap<PathBuf, Identity>,
-	order: VecDeque<PathBuf>,
 	/// Sources reported by an event source that splits a rename into two
 	/// events, waiting for their target. Bounded, and cleared at the end of a
 	/// batch.
@@ -158,12 +156,10 @@ pub struct Correlator {
 const PENDING_CAPACITY: usize = 128;
 
 impl Correlator {
-	pub fn new(capacity: usize) -> Self {
+	pub fn new(initial_capacity: usize) -> Self {
 		Self {
-			capacity: capacity.max(1),
-			by_identity: HashMap::new(),
-			by_path: HashMap::new(),
-			order: VecDeque::new(),
+			by_identity: HashMap::with_capacity(initial_capacity),
+			by_path: HashMap::with_capacity(initial_capacity),
 			pending: VecDeque::new(),
 			pending_capacity: PENDING_CAPACITY,
 		}
@@ -270,17 +266,23 @@ impl Correlator {
 	/// A directory rename changes its children's paths without per-file events,
 	/// so their entries are stale. Re-priming fills them in again.
 	pub fn invalidate_prefix(&mut self, dir: &Path) {
+		self.retain_paths(|path| !path.starts_with(dir));
+	}
+
+	pub fn retain_paths(&mut self, mut keep: impl FnMut(&Path) -> bool) {
 		self.by_path.retain(|path, identity| {
-			let stale = path.starts_with(dir);
-			if stale {
-				self.by_identity.remove(identity);
+			if keep(path) {
+				return true;
 			}
-			!stale
+			self.by_identity.remove(identity);
+			false
 		});
-		self.order.retain(|path| !path.starts_with(dir));
 	}
 
 	fn remember(&mut self, path: PathBuf, identity: Identity) {
+		if self.by_path.get(&path) == Some(&identity) {
+			return;
+		}
 		// A path that now carries another identity does not stand for the old one.
 		if let Some(previous) = self.by_path.insert(path.clone(), identity) {
 			if self.by_identity.get(&previous).is_some_and(|current| current == &path) {
@@ -294,15 +296,6 @@ impl Correlator {
 		if let Some(old) = self.by_identity.insert(identity, path.clone()) {
 			if old != path {
 				self.by_path.remove(&old);
-			}
-		}
-
-		self.order.push_back(path);
-
-		while self.by_identity.len() > self.capacity {
-			let Some(oldest) = self.order.pop_front() else { break };
-			if let Some(identity) = self.by_path.remove(&oldest) {
-				self.by_identity.remove(&identity);
 			}
 		}
 	}
@@ -649,17 +642,30 @@ mod tests {
 	}
 
 	#[test]
-	fn capacity_evicts_oldest() {
-		let mut correlator = Correlator::new(2);
-		correlator.observe(sighting("/dir/a.heic", 1));
-		correlator.observe(sighting("/dir/b.heic", 2));
-		correlator.observe(sighting("/dir/c.heic", 3));
+	fn the_first_primed_identity_still_correlates_in_a_large_directory() {
+		let mut correlator = Correlator::new(256);
+		for index in 0..300 {
+			assert!(
+				correlator
+					.observe(sighting(&format!("/dir/{index}.heic"), index))
+					.is_none()
+			);
+		}
+		let fact = correlator.observe(sighting("/dir/0.jpg", 0)).unwrap();
+		assert_eq!(fact.source, Path::new("/dir/0.heic"));
+		assert_eq!(correlator.len(), 300);
+	}
 
-		assert_eq!(correlator.len(), 2);
-		// `a` was evicted, so its inode is unknown and no rename is reported.
-		assert!(correlator.observe(sighting("/dir/a.jpg", 1)).is_none());
-		// `c` is still known.
-		assert!(correlator.observe(sighting("/dir/c.jpg", 3)).is_some());
+	#[test]
+	fn repeated_sightings_and_deletes_leave_no_stale_paths() {
+		let mut correlator = Correlator::new(1);
+		for _ in 0..10_000 {
+			assert!(correlator.observe(sighting("/dir/a.heic", 1)).is_none());
+		}
+		assert_eq!(correlator.len(), 1);
+		assert_eq!(correlator.by_path.len(), 1);
+		correlator.forget(Path::new("/dir/a.heic"));
+		assert!(correlator.is_empty() && correlator.by_path.is_empty());
 	}
 
 	#[test]

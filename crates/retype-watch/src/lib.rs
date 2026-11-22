@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 pub use notify;
 
-use notify::event::{EventKind, ModifyKind, RenameMode};
+use notify::event::{EventKind, ModifyKind, RemoveKind, RenameMode};
 pub use notify::{Event, RecommendedWatcher, Result as NotifyResult};
 use notify::{RecursiveMode, Watcher};
 use retype_core::correlate::{Correlator, RenameFact, Sighting, coalesce, dedupe};
@@ -164,7 +164,7 @@ pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 /// Kept apart from [`feed`] because a chain must not be joined through a rename
 /// this process made itself: the job's restore is not a step the user took.
 fn raw_facts(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
-	invalidate_renamed_directories(correlator, batch);
+	invalidate_moved_directories(correlator, batch);
 	let mut facts = observe_names(correlator, batch);
 	facts.extend(observe_identity(correlator, batch));
 	correlator.end_batch();
@@ -265,9 +265,14 @@ pub fn rescan(
 	root: &Path,
 	recursive: bool,
 	admit: impl FnMut(&Path) -> bool,
-	stop: impl FnMut() -> bool,
+	mut stop: impl FnMut() -> bool,
 ) -> (Vec<RenameFact>, usize) {
-	scan(correlator, root, recursive, admit, stop, |_, _| {})
+	let scanned = scan(correlator, root, recursive, admit, &mut stop, |_, _| {});
+	/* Correlate before forgetting the old paths that a dropped event never reported. */
+	correlator.retain_paths(|path| {
+		!path.starts_with(root) || stop() || fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_file())
+	});
+	scanned
 }
 
 /// Whether the platform dropped events in this batch.
@@ -371,11 +376,14 @@ where
 	}
 }
 
-/// A directory rename changes every path beneath it without per-file events, so
-/// the identities below the old name are stale. The new tree is primed by the
-/// caller.
-fn invalidate_renamed_directories(correlator: &mut Correlator, batch: &Batch) {
+/// A directory rename or removal may leave all its children without per-file events.
+fn invalidate_moved_directories(correlator: &mut Correlator, batch: &Batch) {
 	for event in &batch.events {
+		if event.kind == EventKind::Remove(RemoveKind::Folder) {
+			for path in &event.paths {
+				correlator.invalidate_prefix(path);
+			}
+		}
 		let EventKind::Modify(ModifyKind::Name(kind)) = event.kind else {
 			continue;
 		};

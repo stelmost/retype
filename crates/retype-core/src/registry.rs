@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
@@ -290,6 +291,8 @@ impl<'a> Resolved<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Registry {
+	revision: String,
+	revision_without_quota: String,
 	tools: BTreeMap<String, Tool>,
 	presets: BTreeMap<String, Preset>,
 	/// Conditions the configuration raised but did not refuse, such as a user
@@ -321,12 +324,35 @@ pub struct Registry {
 	watch: crate::watch::Policy,
 }
 
+fn revision_without_quota(value: &toml::Value) -> String {
+	let mut value = value.clone();
+	if let Some(table) = value.as_table_mut()
+		&& let Some(undo) = table.get_mut("undo").and_then(toml::Value::as_table_mut)
+	{
+		undo.remove("quota");
+		if undo.is_empty() {
+			table.remove("undo");
+		}
+	}
+	format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
+}
+
 impl Registry {
 	/// The table the product ships. A failure here is a build defect, not a
 	/// user error, which is why it is a `Result` that callers surface as
 	/// internal rather than mask.
 	pub fn builtin() -> Result<Self, Diagnoses> {
 		Self::load_in(include_str!("../builtin.toml"), "the built-in configuration")
+	}
+
+	/// Binds a submission to the configuration actually read, not to a mutable pathname.
+	pub fn revision(&self) -> &str {
+		&self.revision
+	}
+
+	/// A storage wait can be released by a quota change, not by different conversion settings.
+	pub fn revision_without_quota(&self) -> &str {
+		&self.revision_without_quota
 	}
 
 	pub fn load(text: &str) -> Result<Self, Diagnoses> {
@@ -423,6 +449,7 @@ impl Registry {
 			return Err(Diagnoses::new(flattened));
 		}
 
+		let revision_without_quota = revision_without_quota(&value);
 		let document: Document = match value.try_into() {
 			Ok(document) => document,
 			// The only signal a serde error gives about its kind is its text, and an
@@ -800,6 +827,8 @@ impl Registry {
 		};
 
 		let registry = Self {
+			revision: format!("{:x}", Sha256::digest(text.as_bytes())),
+			revision_without_quota,
 			tools,
 			presets,
 			backends,
@@ -2091,6 +2120,17 @@ mod tests {
 	}
 
 	const HEADER: &str = "version = 'retype-config-1'\n";
+
+	#[test]
+	fn storage_revision_changes_for_undo_settings_other_than_quota() {
+		let config = |undo: &str| Registry::load(&format!("{HEADER}\n[undo]\n{undo}")).unwrap();
+		let first = config("quota = '1kb'\n");
+		let raised = config("quota = '1mb'\n");
+		let disabled = config("quota = '1mb'\nenabled = false\n");
+		assert_ne!(first.revision(), raised.revision());
+		assert_eq!(first.revision_without_quota(), raised.revision_without_quota());
+		assert_ne!(first.revision_without_quota(), disabled.revision_without_quota());
+	}
 
 	#[test]
 	fn undo_policy_defaults_and_reads_its_knobs() {

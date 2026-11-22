@@ -66,6 +66,10 @@ pub enum Kind {
 	},
 	/// A conversion a client asked for, `docs/dev/architecture/ipc.md` §6.
 	Immediate(crate::daemon::immediate::Request),
+	ConfiguredImmediate {
+		request: crate::daemon::immediate::Request,
+		revision: String,
+	},
 	/// A recovery request keeps its prior outputs and shares worker cancellation.
 	Resume {
 		job: Box<retype_core::job::Job>,
@@ -81,6 +85,18 @@ pub enum Kind {
 		/// Overwrite an output that appeared while the job was parked.
 		force: bool,
 	},
+}
+
+impl Kind {
+	pub(super) fn submission(request: crate::daemon::immediate::Request, revision: Option<&str>) -> Self {
+		match revision {
+			Some(revision) => Self::ConfiguredImmediate {
+				request,
+				revision: revision.to_string(),
+			},
+			None => Self::Immediate(request),
+		}
+	}
 }
 
 /// What a cancel request found.
@@ -131,7 +147,9 @@ impl Inner {
 
 	fn return_front(&mut self, work: QueuedWork) {
 		match &work.0.kind {
-			Kind::Immediate(_) | Kind::Resume { .. } => self.immediate.push_front(work),
+			Kind::Immediate(_) | Kind::ConfiguredImmediate { .. } | Kind::Resume { .. } => {
+				self.immediate.push_front(work)
+			}
 			_ => self.waiting.push_front(work),
 		}
 	}
@@ -177,7 +195,9 @@ impl Queue {
 		admit()?;
 		let work = QueuedWork(work);
 		match &work.0.kind {
-			Kind::Immediate(_) | Kind::Resume { .. } => inner.immediate.push_back(work),
+			Kind::Immediate(_) | Kind::ConfiguredImmediate { .. } | Kind::Resume { .. } => {
+				inner.immediate.push_back(work)
+			}
 			_ => inner.waiting.push_back(work),
 		}
 
@@ -518,6 +538,9 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 					}
 					Kind::Immediate(request) => {
 						crate::daemon::immediate::run(shared, request, &work.id, cancellation);
+					}
+					Kind::ConfiguredImmediate { request, revision } => {
+						crate::daemon::immediate::run_matching(shared, request, &work.id, cancellation, Some(revision));
 					}
 					Kind::Resume { job, force } => {
 						crate::daemon::resume::run_queued(shared, job, *force, cancellation);

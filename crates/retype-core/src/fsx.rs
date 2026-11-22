@@ -21,6 +21,18 @@ pub(crate) mod windows;
 #[path = "fsx_windows_tests.rs"]
 mod windows_tests;
 
+/// Create staging before any backend or recovery bytes are written.
+pub(crate) fn staging_directory(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+	let mut builder = tempfile::Builder::new();
+	builder.prefix(prefix);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		builder.permissions(std::fs::Permissions::from_mode(0o700));
+	}
+	builder.tempdir_in(parent)
+}
+
 /// Rename, retrying while Windows reports a sharing or lock violation.
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
 	#[cfg(windows)]

@@ -695,7 +695,15 @@ fn run_child_captured(
 	let reader = thread::spawn(move || {
 		// A log that cannot be opened is not a reason to fail a conversion; the tail
 		// in the journal is what a report depends on.
-		let mut file = journal.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
+		let mut file = journal.and_then(|path| {
+			match crate::safety::open_metadata_file(&path, crate::safety::MetadataAccess::Append) {
+				Ok(file) => Some(file),
+				Err(error) => {
+					eprintln!("retype: cannot open tool log {}: {error}", path.display());
+					None
+				}
+			}
+		});
 		drain_stderr(&mut stderr_pipe, file.as_mut())
 	});
 

@@ -102,6 +102,41 @@ impl Fixture {
 }
 
 #[test]
+fn an_explicit_config_mismatch_cannot_submit_a_conversion() {
+	let fixture = Fixture::new();
+	let started = fixture.convert(&["daemon", "start"]);
+	assert!(started.status.success(), "{}", String::from_utf8_lossy(&started.stderr));
+	let input = fixture.input();
+	let other = fixture.dir.path().join("no-undo.toml");
+	let active = fs::read_to_string(&fixture.config).unwrap();
+	fs::write(&other, format!("{active}\n[undo]\nenabled = false\n")).unwrap();
+
+	let result = fixture.convert(&[
+		"--config",
+		other.to_str().unwrap(),
+		"convert",
+		input.to_str().unwrap(),
+		"webp",
+	]);
+	assert!(!result.status.success());
+	let stderr = String::from_utf8_lossy(&result.stderr);
+	assert!(
+		stderr.contains("E_CFG_VALIDATION") && stderr.contains("different configuration"),
+		"{stderr}"
+	);
+	assert_eq!(fs::read(&input).unwrap(), b"pixels");
+	assert!(!input.with_extension("webp").exists());
+	let (_, replay) = retype_core::journal::Journal::open(&fixture.state.join("jobs.jsonl")).unwrap();
+	assert!(replay.jobs.is_empty());
+	assert!(
+		retype_core::undo::Store::open(&fixture.state)
+			.list()
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[test]
 fn converts_and_writes_beside_the_input() {
 	let fixture = Fixture::new();
 	let input = fixture.input();

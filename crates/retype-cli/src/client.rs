@@ -170,6 +170,19 @@ mod tests {
 		);
 	}
 
+	#[cfg(unix)]
+	#[test]
+	fn publishing_an_endpoint_does_not_write_through_an_alias() {
+		let state = tempfile::tempdir().unwrap();
+		let document = state.path().join("document.txt");
+		std::fs::write(&document, b"private data").unwrap();
+		std::os::unix::fs::symlink(&document, state.path().join(crate::state::ENDPOINT_FILE)).unwrap();
+		assert!(crate::state::read_endpoint(state.path()).is_err());
+		crate::state::publish_endpoint(state.path(), "/a/socket").unwrap();
+		assert_eq!(std::fs::read(document).unwrap(), b"private data");
+		assert_eq!(crate::state::read_endpoint(state.path()).unwrap(), "/a/socket");
+	}
+
 	#[test]
 	fn a_missing_daemon_is_refused_before_spawning() {
 		let dir = tempfile::tempdir().unwrap();

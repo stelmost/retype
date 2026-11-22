@@ -16,11 +16,7 @@ pub struct Lock {
 
 impl Lock {
 	pub fn acquire(path: &Path, state_dir: &Path) -> Result<Self> {
-		let mut file = fs::OpenOptions::new()
-			.create(true)
-			.write(true)
-			.truncate(false)
-			.open(path)?;
+		let mut file = retype_core::safety::open_metadata_file(path, retype_core::safety::MetadataAccess::Update)?;
 
 		if !try_lock(&file)? {
 			return Err(Error::AlreadyRunning(state_dir.to_path_buf()));
@@ -112,6 +108,31 @@ fn try_lock(_file: &fs::File) -> Result<bool> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_lock_cannot_truncate_a_hard_link_to_user_data() {
+		let directory = tempfile::tempdir().unwrap();
+		let original = directory.path().join("document.txt");
+		let lock = directory.path().join("lock");
+		let bytes = b"unrelated private document\n";
+		fs::write(&original, bytes).unwrap();
+		fs::hard_link(&original, &lock).unwrap();
+		assert!(Lock::acquire(&lock, directory.path()).is_err());
+		assert_eq!(fs::read(original).unwrap(), bytes);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_lock_cannot_truncate_a_symlink_to_user_data() {
+		let directory = tempfile::tempdir().unwrap();
+		let original = directory.path().join("document.txt");
+		let lock = directory.path().join("lock");
+		let bytes = b"unrelated private document\n";
+		fs::write(&original, bytes).unwrap();
+		std::os::unix::fs::symlink(&original, &lock).unwrap();
+		assert!(Lock::acquire(&lock, directory.path()).is_err());
+		assert_eq!(fs::read(original).unwrap(), bytes);
+	}
 
 	#[test]
 	fn a_held_lock_refuses_a_second_daemon() {

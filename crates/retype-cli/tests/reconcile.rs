@@ -194,6 +194,8 @@ fn an_old_timed_ask_is_restored_as_a_confirmation_without_a_deadline() {
 		corrected: None,
 		dropped: Vec::new(),
 		consume: true,
+		watch_root: None,
+		config_revision: None,
 		force: false,
 		input_fingerprint: None,
 	});

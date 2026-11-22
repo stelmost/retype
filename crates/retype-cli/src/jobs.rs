@@ -738,6 +738,8 @@ mod tests {
 				corrected: corrected.map(str::to_string),
 				dropped: Vec::new(),
 				consume: false,
+				watch_root: None,
+				config_revision: None,
 				force: false,
 				input_fingerprint: None,
 			}),
@@ -788,6 +790,8 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: false,
+			watch_root: None,
+			config_revision: None,
 			force: false,
 			input_fingerprint: None,
 		});

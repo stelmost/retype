@@ -80,8 +80,10 @@ pub struct Record {
 	pub source_size: u64,
 	/// Zero on platforms without a mode to restore.
 	pub source_mode: u32,
-	/// Zero when the platform did not report one.
 	pub source_mtime_ns: i64,
+	/* Older records used zero for an unavailable time. */
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	source_mtime_at_epoch: bool,
 	pub link: Link,
 	pub outputs: Vec<Output>,
 	#[serde(default)]
@@ -138,6 +140,7 @@ impl Record {
 			source_size: 0,
 			source_mode: 0,
 			source_mtime_ns: 0,
+			source_mtime_at_epoch: false,
 			link: Link::Copy,
 			outputs: Vec::new(),
 			commits: Vec::new(),
@@ -159,9 +162,13 @@ impl Record {
 		Ok(())
 	}
 
+	fn recorded_mtime_ns(&self) -> Option<i64> {
+		(self.source_mtime_ns != 0 || self.source_mtime_at_epoch).then_some(self.source_mtime_ns)
+	}
+
 	fn verify_source_metadata(&self, file: &fs::File) -> Result<()> {
 		let metadata = file.metadata()?;
-		if mode_of(&metadata) != self.source_mode || mtime_ns(&metadata) != self.source_mtime_ns {
+		if mode_of(&metadata) != self.source_mode || mtime_ns(&metadata)? != self.recorded_mtime_ns() {
 			return Err(std::io::Error::other("the original's permissions or modification time changed").into());
 		}
 		self.verify_source_attributes(file)
@@ -324,14 +331,10 @@ impl Store {
 	pub fn lease(&self, id: &JobId) -> Result<JobLease> {
 		let state = self.root.parent().expect("state directory");
 		crate::fsx::create_dir_all_durable(state)?;
-		let mut options = fs::OpenOptions::new();
-		options.read(true).write(true).create(true);
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::OpenOptionsExt;
-			options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-		}
-		let file = options.open(state.join(format!("undo-job.{}.lock", id.as_str())))?;
+		let file = crate::safety::open_metadata_file(
+			&state.join(format!("undo-job.{}.lock", id.as_str())),
+			crate::safety::MetadataAccess::Update,
+		)?;
 		#[cfg(unix)]
 		{
 			use std::os::fd::AsRawFd;
@@ -457,13 +460,15 @@ impl Store {
 	}
 
 	fn reserve(&self, subject: Subject, expected: Option<Fingerprint>) -> Result<Record> {
+		let input = open_undo_backup(&subject.bytes)?;
+		let metadata = input.metadata()?;
+		let modified = mtime_ns(&metadata)?;
+		let attributes = crate::xattr::fingerprint(&input)?;
 		crate::fsx::create_dir_all_durable(&self.root)?;
 		set_mode(&self.root, 0o700)?;
 		let directory = self.directory(&subject.id);
 		fs::create_dir(&directory)?;
 		set_mode(&directory, 0o700)?;
-
-		let metadata = fs::metadata(&subject.bytes)?;
 		let mut record = Record::new(
 			subject.id.clone(),
 			subject.intent,
@@ -475,9 +480,10 @@ impl Store {
 		record.consume_source = subject.consume_source;
 		record.source_size = metadata.len();
 		record.source_mode = mode_of(&metadata);
-		record.source_mtime_ns = mtime_ns(&metadata);
+		record.source_mtime_ns = modified.unwrap_or_default();
+		record.source_mtime_at_epoch = modified == Some(0);
 		record.reservation_fingerprint = expected;
-		record.source_attributes_sha256 = Some(crate::xattr::fingerprint(&open_undo_backup(&subject.bytes)?)?);
+		record.source_attributes_sha256 = Some(attributes);
 
 		write_manifest(&directory, &record)?;
 		crate::fsx::sync_directory(&self.root)?;
@@ -535,7 +541,7 @@ impl Store {
 	pub fn load(&self, id: &JobId) -> Result<Option<Record>> {
 		let path = self.directory(id).join("meta.toml");
 
-		let text = match fs::read_to_string(&path) {
+		let text = match crate::safety::read_metadata_text(&path) {
 			Ok(text) => text,
 			Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
 			Err(error) => return Err(Error::Io(error)),
@@ -1399,14 +1405,7 @@ pub(crate) fn store_lock(root: &Path) -> Result<StoreLock> {
 		.map_err(|_| Error::Io(std::io::Error::other("undo store lock poisoned")))?;
 	let state = root.parent().expect("state directory");
 	crate::fsx::create_dir_all_durable(state)?;
-	let mut options = fs::OpenOptions::new();
-	options.read(true).write(true).create(true);
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::OpenOptionsExt;
-		options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-	}
-	let file = options.open(state.join("undo.lock"))?;
+	let file = crate::safety::open_metadata_file(&state.join("undo.lock"), crate::safety::MetadataAccess::Update)?;
 	#[cfg(unix)]
 	{
 		use std::os::fd::AsRawFd;
@@ -1473,20 +1472,31 @@ fn restore_times(file: &fs::File, record: &Record) -> Result<()> {
 			file.set_permissions(fs::Permissions::from_mode(record.source_mode))?;
 		}
 	}
-	if record.source_mtime_ns != 0 {
-		let modified = UNIX_EPOCH + Duration::from_nanos(record.source_mtime_ns.max(0) as u64);
+	if let Some(nanos) = record.recorded_mtime_ns() {
+		let distance = Duration::from_nanos(nanos.unsigned_abs());
+		let modified = if nanos < 0 {
+			UNIX_EPOCH.checked_sub(distance)
+		} else {
+			UNIX_EPOCH.checked_add(distance)
+		}
+		.ok_or_else(|| std::io::Error::other("recorded modification time is outside the platform's range"))?;
 		file.set_times(fs::FileTimes::new().set_modified(modified))?;
 	}
 	Ok(())
 }
 
-fn mtime_ns(metadata: &fs::Metadata) -> i64 {
-	metadata
-		.modified()
-		.ok()
-		.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-		.map(|since| since.as_nanos() as i64)
-		.unwrap_or_default()
+fn mtime_ns(metadata: &fs::Metadata) -> Result<Option<i64>> {
+	let modified = match metadata.modified() {
+		Ok(time) => time,
+		Err(error) if error.kind() == std::io::ErrorKind::Unsupported => return Ok(None),
+		Err(error) => return Err(error.into()),
+	};
+	let nanos = match modified.duration_since(UNIX_EPOCH) {
+		Ok(distance) => distance.as_nanos() as i128,
+		Err(before) => -(before.duration().as_nanos() as i128),
+	};
+	let nanos = i64::try_from(nanos).map_err(|_| std::io::Error::other("modification time cannot be retained"))?;
+	Ok(Some(nanos))
 }
 
 #[cfg(unix)]
@@ -1573,6 +1583,34 @@ mod tests {
 			Some(value.to_vec())
 		);
 		assert!(!store.directory(&record.id).exists());
+	}
+
+	#[test]
+	fn undo_restores_epoch_and_pre_epoch_times() {
+		let directory = state();
+		let store = Store::open(directory.path());
+		for (index, modified) in [UNIX_EPOCH, UNIX_EPOCH - Duration::from_secs(1)]
+			.into_iter()
+			.enumerate()
+		{
+			let subject = subject(index + 1, directory.path());
+			fs::OpenOptions::new()
+				.write(true)
+				.open(&subject.bytes)
+				.unwrap()
+				.set_times(fs::FileTimes::new().set_modified(modified))
+				.unwrap();
+			assert_eq!(fs::metadata(&subject.bytes).unwrap().modified().unwrap(), modified);
+			let record = store.save(subject).unwrap();
+			let replayed = store.load(&record.id).unwrap().unwrap();
+			assert_eq!(replayed.recorded_mtime_ns(), Some(-(index as i64) * 1_000_000_000));
+			let bytes = fs::read(&record.source_path).unwrap();
+			fs::remove_file(&record.source_path).unwrap();
+			store.restore(&record.id).unwrap();
+			assert_eq!(fs::metadata(&record.source_path).unwrap().modified().unwrap(), modified);
+			assert_eq!(fs::read(&record.source_path).unwrap(), bytes);
+			assert!(store.load(&record.id).unwrap().is_none());
+		}
 	}
 
 	#[test]

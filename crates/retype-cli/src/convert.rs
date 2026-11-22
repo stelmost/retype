@@ -53,7 +53,8 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 
 	let context = crate::client::context(request.state_dir, request.allow_spawn)?;
-	let submitted = match retype_client::jobs::submit(
+	let config_revision = crate::config::has_selection().then(|| registry.revision());
+	let submitted = match retype_client::jobs::submit_matching(
 		&context,
 		&JobSubmit {
 			input: PathBuf::from(request.input),
@@ -62,6 +63,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 			force: request.force,
 			mode: SubmitMode::Immediate,
 		},
+		config_revision,
 	) {
 		Ok(answer) => answer,
 		Err(retype_client::Error::Client(retype_ipc::ClientError::Rpc(error))) => {

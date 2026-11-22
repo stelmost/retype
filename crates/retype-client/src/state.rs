@@ -24,15 +24,19 @@ pub fn resolve(explicit: Option<PathBuf>) -> Result<PathBuf> {
 
 pub fn publish_endpoint(state_dir: &Path, endpoint: &str) -> Result<()> {
 	let path = state_dir.join(ENDPOINT_FILE);
-	fs::write(&path, format!("{endpoint}\n"))?;
-	set_private(&path)?;
+	retype_core::convert::write_atomically(&path, |stage| {
+		use std::io::Write;
+		let mut file = retype_core::safety::open_metadata_file(stage, retype_core::safety::MetadataAccess::Update)?;
+		writeln!(file, "{endpoint}")?;
+		Ok(())
+	})?;
 	Ok(())
 }
 
 pub fn read_endpoint(state_dir: &Path) -> Result<String> {
 	let path = state_dir.join(ENDPOINT_FILE);
 
-	let endpoint = match fs::read_to_string(&path) {
+	let endpoint = match retype_core::safety::read_metadata_text(&path) {
 		Ok(endpoint) => endpoint,
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
 			return Err(Error::DaemonUnavailable);

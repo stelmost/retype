@@ -25,6 +25,10 @@ fn explicit() -> Option<&'static Path> {
 	EXPLICIT.get().map(PathBuf::as_path)
 }
 
+pub fn has_selection() -> bool {
+	explicit().is_some() || std::env::var_os("RETYPE_CONFIG").is_some_and(|path| !path.is_empty())
+}
+
 /// `--config` wins, then `RETYPE_CONFIG`, then the platform's directory.
 pub fn user_path() -> Option<PathBuf> {
 	retype_config::user_path(explicit())
