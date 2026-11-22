@@ -69,7 +69,7 @@ release() {
 #!/bin/sh
 ${3:-:}
 if [ -n "\${RETYPE_TEST_LAUNCH_RECORD:-}" ]; then
-	printf '%s\\n' "\$@" >"\$RETYPE_TEST_LAUNCH_RECORD"
+	printf '%s\\n' "\$0" "\$@" >"\$RETYPE_TEST_LAUNCH_RECORD"
 fi
 echo '$message'
 EOF
@@ -161,13 +161,15 @@ if [ "$os" = unknown-linux-gnu ]; then
 	[ ! -e "$tmp/service-active" ] && [ ! -e "$tmp/service-enabled" ]
 	! grep -q '@PREFIX@' "$tmp/config/systemd/user/retype.service" "$tmp/data/applications/retype-uri.desktop"
 	[ -L "$tmp/config/mimeapps.list" ]
+	# GIO exercises quoting and argv delivery to the fixture binary, not a Review dialog.
+	review_uri='retype://job/01m6b4rararx3wrttkrgpp1783'
 	env "${common[@]}" RETYPE_TEST_LAUNCH_RECORD="$tmp/launched" \
-		gio launch "$tmp/data/applications/retype-uri.desktop" 'retype://job/example' >/dev/null
+		gio launch "$tmp/data/applications/retype-uri.desktop" "$review_uri" >/dev/null
 	for attempt in {1..100}; do
-		[ ! -f "$tmp/launched" ] || break
+		[ ! -s "$tmp/launched" ] || break
 		sleep 0.05
 	done
-	[ "$(<"$tmp/launched")" = $'uri\nretype://job/example' ]
+	[ "$(<"$tmp/launched")" = "$(printf '%s\n' "$prefix/bin/retype" uri "$review_uri")" ]
 	# A second prefix must not take over the current installation's global user definitions.
 	if env "${common[@]}" RETYPE_VERSION=v0.0.1-test bash "$root/packaging/install.sh" \
 		--prefix "$tmp/other-prefix" >"$tmp/ownership-failure.log" 2>&1; then

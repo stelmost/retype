@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import stat
@@ -22,6 +23,15 @@ import tomllib
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def file_digests(directory):
+    return {path: sha(path) for path in directory.rglob('*') if path.is_file()}
+
+
+def review_inputs(work, state):
+    return (file_digests(work) | file_digests(state / 'undo') | file_digests(state / 'recovery') |
+            {state / 'jobs.jsonl': sha(state / 'jobs.jsonl')})
 
 
 def remove_windows_installation(run, installer, env):
@@ -196,19 +206,35 @@ def main():
             print(f'PASS ({scope}):' if windows else 'PASS:', label, flush=True)
 
         def undo(label, job):
-            cli(label, 'undo', job['id'], '--no-spawn')
+            cli(label, 'undo', job['id'])
 
-        def uri_undo(label, job, source, expected):
-            (report / f'{label}.requested').write_text(job['id'] + '\n')
-            command = ['open'] if macos else ['gio', 'open']
-            run(label, [*command, f'retype://job/{job["id"]}'])
-            deadline = time.monotonic() + 15
-            while time.monotonic() < deadline:
-                if source.exists() and all(not Path(output['path']).exists() for output in job['outputs']):
-                    break
-                time.sleep(.05)
-            check(label, source.exists() and sha(source) == expected and
-                  all(not Path(output['path']).exists() for output in job['outputs']))
+        def convert_heic(label, source):
+            shutil.copy2(repo / 'fixtures/native-watch/photo.heic', source)
+            source.with_suffix('.webp').write_bytes(b'unowned adjacent file\0\xff')
+            original = file_digests(work)
+            job = cli(label, 'convert', source, 'jpg')['job']
+            output = source.with_suffix('.jpg')
+            converted = original.copy()
+            del converted[source]
+            check(f'{label}: real HEIC disposition', job['source_disposition']['state'] == 'removed' and
+                  output.is_file() and file_digests(work) == (converted | {output: sha(output)}))
+            return job, original
+
+        def refuse_review_requests(job):
+            uri = f'retype://job/{job["id"]}'
+            assert (state / 'undo' / job['id'] / 'meta.toml').is_file(), 'HEIC conversion must have an undo record'
+            before = review_inputs(work, state)
+            # The fixture selects RETYPE_STATE_DIR in the child environment, not through the request.
+            for label, command in (
+                ('uri-legacy-undo', ['uri', '--', uri + '?action=undo']),
+                ('uri-short-id', ['uri', '--', uri[:-1]]),  # A unique job prefix, not a full ID.
+                ('uri-json', ['--json', 'uri', '--', uri]),
+            ):
+                (report / f'{label}.requested').write_text(command[-1] + '\n')
+                result = run(label, [binary, *command], success=False)
+                if '--json' in command and result.strip():
+                    assert json.loads(result)['ok'] is False, result
+                check(f'{label} refuses without changing files, recovery or journal', before == review_inputs(work, state))
 
         def stop(label):
             if binary.exists() and (state / 'endpoint').exists():
@@ -291,23 +317,26 @@ def main():
                 check('desktop identity and disabled user unit', desktop.is_file() and unit.is_file() and
                       not list(unit.parent.glob('*.wants/retype.service')))
                 run('desktop-validate', ['desktop-file-validate', desktop])
-                check('installed URI association', run('mime-default', ['xdg-mime', 'query', 'default', 'x-scheme-handler/retype']).strip() == 'retype-uri.desktop')
+                check('installed URI association', run('mime-default', ['xdg-mime', 'query', 'default',
+                      'x-scheme-handler/retype']).strip() == 'retype-uri.desktop')
+                exec_line = next(line for line in desktop.read_text().splitlines() if line.startswith('Exec='))
+                check('installed URI handler targets the exact binary',
+                      shlex.split(exec_line.removeprefix('Exec=')) == ['/usr/bin/env', str(binary), 'uri', '%u'])
             if macos:
-                bundle = prefix / 'share/retype/macos/retype.app/Contents'
-                check('macOS bundle and disabled startup', (bundle / 'MacOS/retype-notifier').is_file() and
-                      sha(bundle / 'Resources/retype') == sha(binary) and not macos_unit.exists())
+                app = prefix / 'share/retype/macos/retype.app'
+                notifier = app / 'Contents/MacOS/retype-notifier'
+                check('macOS bundle and disabled startup', notifier.is_file() and
+                      sha(app / 'Contents/Resources/retype') == sha(binary) and not macos_unit.exists())
+                check('installed URI association and owned app link', application_link.is_symlink() and
+                      application_link.resolve() == app.resolve() and
+                      run('macos-uri-default', [notifier, 'handler']).strip() == 'com.lapilliworks.retype.cli')
             run('version', [binary, 'version'])
             run('doctor', [binary, 'doctor', '--check', '--state-dir', state])
-            heic = work / 'photo.HEIC'
-            shutil.copy2(repo / 'fixtures/native-watch/photo.heic', heic)
-            expected = sha(heic)
-            job = cli('heic', 'convert', heic, 'jpg')['job']
-            check('real HEIC disposition', job['source_disposition']['state'] == 'removed' and not heic.exists() and (work / 'photo.jpg').exists())
-            if windows:
-                undo('heic-undo', job)
-            else:
-                uri_undo('online URI exact HEIC undo', job, heic, expected)
-            check('exact HEIC undo', sha(heic) == expected and not (work / 'photo.jpg').exists())
+            job, original = convert_heic('heic', work / 'photo.HEIC')
+            refuse_review_requests(job)
+            cli('online-daemon-status', 'daemon', 'status', '--no-spawn')
+            undo('online-heic-undo', job)
+            check('online CLI undo restores exact HEIC and removes only its output', file_digests(work) == original)
             png = work / 'image.png'
             shutil.copy2(repo / 'fixtures/fidelity/alpha.png', png)
             expected = sha(png)
@@ -337,23 +366,21 @@ def main():
             damaged.write_bytes(b'invalid source')
             cli('decoder-refusal', 'convert', damaged, 'jpg', '--no-spawn', success=False)
             check('failure preserves source', damaged.read_bytes() == b'invalid source' and not damaged.with_suffix('.jpg').exists())
+            offline_job, original = convert_heic('offline-job', work / 'offline.HEIC')
             before = sha(binary)
-            if windows:
-                stop('stop-before-update')
+            stop('stop-before-update')
             run('update', installer)
             backups = (prefix / 'share').glob('retype-backup-*' if windows else 'retype-backup.*')
             check('update backup', sha(binary) == before and any((backup / binary.name).is_file() and sha(backup / binary.name) == before for backup in backups))
             (mirror / 'SHA256SUMS').write_text(f'{"0" * 64}  {archive.name}\n')
             run('checksum-refusal', installer, False)
             check('checksum failure preserves installation', sha(binary) == before)
-            if not windows:
-                offline = work / 'offline.HEIC'
-                shutil.copy2(repo / 'fixtures/native-watch/photo.heic', offline)
-                expected = sha(offline)
-                job = cli('offline-job', 'convert', offline, 'jpg', '--no-spawn')['job']
-                stop('stop-for-offline-uri')
-                uri_undo('offline URI exact HEIC undo', job, offline, expected)
-                check('offline URI does not spawn daemon', not (state / 'endpoint').exists())
+            check('offline CLI undo starts without a daemon', not (state / 'endpoint').exists())
+            daemon_log = sha(state / 'daemon.log')
+            undo('offline-heic-undo', offline_job)
+            check('offline CLI undo restores exact HEIC and removes only its output', file_digests(work) == original)
+            check('offline CLI undo does not spawn a daemon', not (state / 'endpoint').exists() and
+                  sha(state / 'daemon.log') == daemon_log)
             journal = (state / 'jobs.jsonl').read_bytes()
             if windows:
                 current = json.loads(user_path('user-path-before-uninstall'))

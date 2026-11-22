@@ -2,11 +2,13 @@
 """Synthetic checks for installed-archive evidence assertions, not production fidelity."""
 import copy
 import io
+from pathlib import Path
+import tempfile
 import tomllib
 import unittest
 from unittest import mock
 
-from installed import installed_fidelity_matches_builds, main, remove_windows_installation, without_installer_path
+from installed import installed_fidelity_matches_builds, main, remove_windows_installation, review_inputs, without_installer_path
 
 
 MANIFEST = tomllib.loads("""
@@ -81,6 +83,28 @@ class InstalledArchiveTests(unittest.TestCase):
         wrong_target = output()
         wrong_target['format'] = 'webp'
         self.assertFalse(installed_fidelity_matches_builds(job([wrong_target]), MANIFEST))
+
+    def test_review_snapshot_detects_changes_before_consent(self):
+        with tempfile.TemporaryDirectory() as private:
+            work = Path(private) / 'work'
+            state = Path(private) / 'state'
+            original = state / 'undo' / 'job' / 'source.HEIC'
+            operation = state / 'recovery' / 'operation.json'
+            work.mkdir()
+            original.parent.mkdir(parents=True)
+            operation.parent.mkdir()
+            paths = [work / 'photo.jpg', work / 'photo.webp', original, operation, state / 'jobs.jsonl']
+            for path in paths:
+                path.write_bytes(b'before')
+            before = review_inputs(work, state)
+            for path in paths:
+                with self.subTest(path=path.name):
+                    path.write_bytes(b'edited')
+                    self.assertNotEqual(review_inputs(work, state), before)
+                    path.write_bytes(b'before')
+            self.assertEqual(review_inputs(work, state), before)
+            (work / 'photo.HEIC').write_bytes(b'restored')
+            self.assertNotEqual(review_inputs(work, state), before)
 
     def test_windows_removal_uses_the_same_command_and_a_child_only_action(self):
         command = ['pwsh', '-NoProfile', '-NonInteractive', '-File', 'packaging/install.ps1']
