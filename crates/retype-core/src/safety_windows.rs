@@ -8,15 +8,15 @@ use std::path::Path;
 
 use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
 use windows_sys::Win32::Storage::FileSystem::{
-	DELETE, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS, FILE_ATTRIBUTE_RECALL_ON_OPEN,
-	FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-	FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-	FileDispositionInfoEx, SetFileInformationByHandle,
+	BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
+	FILE_ATTRIBUTE_RECALL_ON_OPEN, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DISPOSITION_FLAG_DELETE,
+	FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+	FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx, GetFileInformationByHandle, SetFileInformationByHandle,
 };
 
 use super::{Fingerprint, Removal, StreamProtection, streams};
 use crate::error::{Error, Result};
-use crate::fsx::windows::Directory;
+use crate::fsx::windows::{Directory, private};
 
 pub(super) fn source_stream_protection(
 	path: &Path,
@@ -50,15 +50,13 @@ pub(super) fn remove_owned(
 	if !expected.same_file_and_content(&actual) || !actual.matches_cancellable(&path, cancellation)? {
 		return Err(Error::Exists(path));
 	}
-	if let Some(protection) = streams::inspect(&file) {
+	if let Some(protection) = removal_protection(&file)? {
 		return Ok(Removal::Protected(protection));
 	}
 
-	let directory = tempfile::Builder::new()
-		.prefix(".retype-recovery.")
-		.tempdir_in(parent_path)?
-		.keep();
-	let held_directory = Directory::open(&directory)?;
+	let directory = crate::fsx::staging_directory(parent_path, ".retype-recovery.")?;
+	let held_directory = Directory::open(directory.path())?;
+	let directory = directory.keep();
 	let claimed = directory.join(path.file_name().expect("resolved file name"));
 	cancellation.commit(|| {
 		Ok(crate::fsx::rename_open(
@@ -90,7 +88,7 @@ pub(super) fn remove_owned(
 	}
 	/* Per-stream sharing requires a fresh check after claim; inspection and disposition are not atomic. */
 	let protected = cancellation.commit(|| {
-		if let Some(protection) = streams::inspect(&file) {
+		if let Some(protection) = removal_protection(&file)? {
 			return Ok(Some((file, protection)));
 		}
 		remove_open(file)?;
@@ -126,6 +124,24 @@ pub(super) fn remove_owned(
 	#[cfg(test)]
 	crate::durability_tests::checkpoint("cleanup.complete")?;
 	Ok(Removal::Removed)
+}
+
+fn removal_protection(file: &File) -> io::Result<Option<StreamProtection>> {
+	match private::require_private(file) {
+		Ok(()) => {}
+		Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+			return Ok(Some(StreamProtection::SharedAccess));
+		}
+		Err(error) => return Err(error),
+	}
+	let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+	if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+		return Err(io::Error::last_os_error());
+	}
+	if information.nNumberOfLinks != 1 {
+		return Ok(Some(StreamProtection::MultipleNames));
+	}
+	Ok(streams::inspect(file))
 }
 
 fn retire_claim_directory(parent: &Directory, held: Directory, directory: &Path) -> io::Result<()> {
@@ -256,6 +272,23 @@ fn remove_open(file: File) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn cleanup_does_not_claim_a_file_with_another_name() {
+		let root = tempfile::tempdir().unwrap();
+		let private = crate::fsx::staging_directory(root.path(), ".private.").unwrap();
+		let source = private.path().join("source");
+		let alias = root.path().join("alias");
+		fs::write(&source, b"original").unwrap();
+		fs::hard_link(&source, &alias).unwrap();
+		let expected = Fingerprint::of(&source).unwrap();
+		assert_eq!(
+			remove_owned(&source, &expected, &crate::execute::Cancellation::default()).unwrap(),
+			Removal::Protected(StreamProtection::MultipleNames),
+		);
+		assert_eq!(fs::read(source).unwrap(), b"original");
+		assert_eq!(fs::read(alias).unwrap(), b"original");
+	}
 
 	#[test]
 	fn restoration_holds_the_file_and_its_parent_against_replacement() {

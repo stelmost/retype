@@ -21,8 +21,18 @@ pub(crate) mod windows;
 #[path = "fsx_windows_tests.rs"]
 mod windows_tests;
 
-/// Create staging before any backend or recovery bytes are written.
-pub(crate) fn staging_directory(parent: &Path, prefix: &str) -> io::Result<tempfile::TempDir> {
+#[cfg(windows)]
+pub use windows::private::StagingDirectory;
+#[cfg(not(windows))]
+pub type StagingDirectory = tempfile::TempDir;
+
+#[cfg(windows)]
+pub(crate) fn staging_directory(parent: &Path, prefix: &str) -> io::Result<StagingDirectory> {
+	windows::private::staging_directory(parent, prefix)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn staging_directory(parent: &Path, prefix: &str) -> io::Result<StagingDirectory> {
 	let mut builder = tempfile::Builder::new();
 	builder.prefix(prefix);
 	#[cfg(unix)]
@@ -31,6 +41,11 @@ pub(crate) fn staging_directory(parent: &Path, prefix: &str) -> io::Result<tempf
 		builder.permissions(std::fs::Permissions::from_mode(0o700));
 	}
 	builder.tempdir_in(parent)
+}
+
+#[cfg(windows)]
+pub fn ensure_private_state_directory(path: &Path) -> io::Result<()> {
+	windows::private::ensure_state_directory(path)
 }
 
 /// Rename, retrying while Windows reports a sharing or lock violation.

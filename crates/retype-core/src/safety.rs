@@ -20,7 +20,7 @@ mod windows;
 pub struct Snapshot {
 	pub path: std::path::PathBuf,
 	pub original: Fingerprint,
-	_directory: tempfile::TempDir,
+	_directory: crate::fsx::StagingDirectory,
 }
 
 impl Snapshot {
@@ -301,6 +301,7 @@ pub fn open_metadata_file(path: &Path, access: MetadataAccess) -> io::Result<Fil
 	let links = {
 		use std::os::windows::io::AsRawHandle;
 		use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+		crate::fsx::windows::private::require_private(&file)?;
 		let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
 		if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) } == 0 {
 			return Err(io::Error::last_os_error());
@@ -458,6 +459,8 @@ pub fn restore_owned_name(
 pub enum StreamProtection {
 	NamedStreams,
 	InspectionUnavailable,
+	SharedAccess,
+	MultipleNames,
 }
 
 impl StreamProtection {
@@ -465,6 +468,8 @@ impl StreamProtection {
 		match self {
 			Self::NamedStreams => "the file has named data streams that Retype does not copy",
 			Self::InspectionUnavailable => "Retype could not reliably inspect the file for named data streams",
+			Self::SharedAccess => "Windows permissions do not establish private cleanup access",
+			Self::MultipleNames => "other hard links prevent isolating the file for cleanup",
 		}
 	}
 }

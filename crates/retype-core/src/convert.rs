@@ -58,7 +58,7 @@ pub(crate) enum PublicationProgress {
 pub struct StagedOutput {
 	temp: PathBuf,
 	target: PathBuf,
-	_directory: tempfile::TempDir,
+	_directory: crate::fsx::StagingDirectory,
 	publication: Publication,
 }
 
@@ -156,6 +156,7 @@ impl StagedOutput {
 		progress: &mut PublicationProgress,
 	) -> Result<()> {
 		let mut file = open_publication_file(&self.temp)?;
+		crate::fsx::windows::private::require_private(&file)?;
 		if let Some(expected) = expected {
 			let actual = crate::safety::Fingerprint::of_open_file(&self.temp, &mut file)?;
 			if !expected.same_file_and_content(&actual) {
@@ -264,7 +265,7 @@ pub enum PreparedInput {
 	Snapshot {
 		input: PathBuf,
 		target: PathBuf,
-		directory: tempfile::TempDir,
+		directory: crate::fsx::StagingDirectory,
 	},
 }
 

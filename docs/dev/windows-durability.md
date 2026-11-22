@@ -8,6 +8,8 @@ Windows source disposal and destructive undo require fixed local NTFS paths. Eac
 - Regular files and directories without reparse points, offline attributes or recall attributes
 - Directory ancestors held against rename during synchronization and handle-owned removal
 - File identity and content checked through the same handle used to claim and remove the file
+- Single-link files with private ACLs, and owner-only ACLs at staging and claim creation
+- Named data streams absent on both the live and the claimed file, under the exclusive-ownership contract
 - Write, delete, synchronization and permission failures propagated without a pathname-deletion fallback
 
 SMB, removable media, other filesystems, junction ancestors and cloud placeholders are outside this scope. Directory synchronization and cleanup fail explicitly on unsupported paths. Recovery storage and committed output directories are checked before source disposal; record deletion also qualifies the recovery directory before changing it. This is not qualification of every storage device or synchronization provider.
@@ -19,7 +21,7 @@ Directory creation persists newly created ancestor names. Publication flushes th
 Run in a non-elevated terminal on disposable local NTFS storage. Keep real originals and manually registered watches out of the test environment.
 
 ```powershell
-cargo test -p retype-core --locked --lib fsx::windows::tests -- --nocapture
+cargo test -p retype-core --locked --lib fsx::windows:: -- --nocapture
 cargo test -p retype-core --locked --lib durability_tests:: -- --nocapture --test-threads=1
 ```
 

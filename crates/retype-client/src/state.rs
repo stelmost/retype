@@ -82,6 +82,13 @@ pub fn socket_path(state_dir: &Path) -> Result<PathBuf> {
 	Ok(path)
 }
 
+#[cfg(windows)]
+pub fn ensure_private_directory(path: &Path) -> Result<()> {
+	retype_core::fsx::ensure_private_state_directory(path)?;
+	Ok(())
+}
+
+#[cfg(not(windows))]
 pub fn ensure_private_directory(path: &Path) -> Result<()> {
 	retype_core::fsx::create_dir_all_durable(path)?;
 	set_private(path)?;
@@ -95,7 +102,7 @@ fn set_private(path: &Path) -> Result<()> {
 	Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn set_private(_path: &Path) -> Result<()> {
 	Ok(())
 }

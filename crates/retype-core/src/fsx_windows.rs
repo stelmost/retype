@@ -17,6 +17,9 @@ use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use crate::job::FileIdentity;
 
+#[path = "fsx_windows_private.rs"]
+pub(crate) mod private;
+
 pub(crate) struct Directory {
 	file: File,
 	_parents: Vec<File>,
