@@ -31,7 +31,7 @@ Debian qualification runs independently of Windows/macOS failures. Publication r
 
 Current Debian stable is the Linux support baseline, currently Debian 13 (trixie), with glibc 2.41. The older Debian 11/glibc 2.31 target is retired. Other distributions may run the binary but do not carry a support commitment. Builds and converter evidence must be checked in the stable userspace.
 
-The current required targets are defined in [Platforms](../docs/reference/platforms.md#1-support-matrix). Other desktop combinations are best effort, not qualification gates. Optional artifacts may be published only after their own successful tests and trust verification.
+The current required targets are defined in [Platforms](../docs/reference/platforms.md#1-support-matrix). Other desktop combinations are best effort, not qualification gates. The first signed handoff publishes only the three required archives; other targets remain previews.
 
 | Scope | Target | CI host and evidence limit |
 |---|---|---|
@@ -44,9 +44,16 @@ The current required targets are defined in [Platforms](../docs/reference/platfo
 
 Windows MSVC builds use `-C target-feature=+crt-static`; a compile-time test guard refuses a dynamic CRT. The qualified Windows build/copy/`tar.exe`/hash/restricted-worker pipeline is retained. The release workflow does not rebuild those archives or manufacture additional architectures from another run's evidence.
 
-Manual dispatch consumes only `retype-preview-*` artifacts and cannot publish. Tags consume only `retype-signed-*` artifacts and require all three primary archives; current preview producers cannot satisfy that gate. Canonical installer closure is generated before checksums. The final `SHA256SUMS` is signed last as `SHA256SUMS.minisig`, then every final archive and installer is reverified from trusted source. The tag must match the workspace version. Missing signed/native producers or inputs fails closed, not to preview.
+Manual dispatch consumes only `retype-preview-*` artifacts and cannot publish. The tag workflow downloads the exact approved candidate from a separate draft release in this repository. It does not rebuild, re-sign, use preview artifacts, or overwrite a published release. The tag must match the workspace version and the qualification's source revision.
 
-The signed asset set is archives, per-archive `.sha256` files, both standalone installers and their checksums, `SHA256SUMS`, `SHA256SUMS.minisig`, and GitHub build attestations. Attestations describe build provenance; they are not publisher signatures. Native Windows 10 22H2 and real desktop/session qualification, including [native notification Review](../docs/dev/testing.md#native-notification-review), remain separate release-approval gates.
+### Signed candidate handoff
+
+1. Build the three primary archives from the exact tag revision. Verify native signatures on the applicable native hosts. Use fresh staging and independently approved public pins; run `bash scripts/assemble-release.sh --signed <candidate-dir>` to generate both pinned installers and the final checksums. Sign `SHA256SUMS` with `scripts/sign-release.sh` on the approved signing host before qualifying the signed candidate.
+2. Run [installed qualification](../docs/dev/testing.md#initial-release-scope) on the exact candidate, including [native notification Review](../docs/dev/testing.md#native-notification-review). Retain each platform's evidence report. After review, create `QUALIFICATION.json` with `tag`, `revision` (full Git commit), `manifest_sha256`, `macos_team_id`, `windows_certificate_sha256`, and `platforms` (an object keyed by the three required target triples). Each platform records its exact `platform` label (`Debian 13 amd64`, `macOS 15 arm64`, or `Windows 10 22H2 amd64`), `report_sha256`, and `checks`: `native_trust`, `recovery`, `uri`, `startup`, `notification`, `session`, and `removal`. Each check must be `passed` on its required platform. Sign the reviewed statement with the approved publisher key as `QUALIFICATION.json.minisig`.
+3. Upload only the three archives, both installers, their `.sha256` files, and the signed manifest and qualification pairs to a draft named by the tag `candidate-<release-tag>`. Keep private keys and full qualification reports off the runner and out of release assets. Record the draft release ID and SHA-256 of the reviewed qualification separately in the protected `signed-release` GitHub environment. Require a release reviewer and restrict deployments to protected release tags.
+4. Approve the tag workflow, or rerun the tag workflow after staging. The workflow verifies both publisher signatures, the reviewed qualification digest, revision, exact asset hashes and canonical pinned installers before creating the release. It does not claim external builds were built by GitHub Actions. A failed or pre-existing release is not overwritten; investigate it before retrying.
+
+The evidence signature records release approval; it does not independently prove that desktop tests were executed. Missing or unapproved evidence remains a release blocker.
 
 ## Script install
 
@@ -58,18 +65,18 @@ the release tag through the GitHub API. Signed mode is the default: authenticate
 `PATH`. Running either again updates in place.
 
 ```sh
-curl -fsSL https://retype.name/install.sh | bash
-curl -fsSL https://retype.name/install.sh | bash -s -- --version v0.1.0-alpha
-curl -fsSL https://retype.name/install.sh | bash -s -- --prefix "$HOME/.local"
+bash ./install.sh
+bash ./install.sh --version '<supported-release-tag>'
+bash ./install.sh --prefix "$HOME/.local"
 ```
 
 ```powershell
-irm https://retype.name/install.ps1 | iex
-$env:RETYPE_VERSION = 'v0.1.0-alpha'; irm https://retype.name/install.ps1 | iex
-$env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://retype.name/install.ps1 | iex
+& .\install.ps1
+$env:RETYPE_VERSION = '<supported-release-tag>'; & .\install.ps1
+$env:RETYPE_PREFIX = 'C:\Tools\retype'; & .\install.ps1
 ```
 
-Source installers contain complete canonical verifier blocks, checked with `python3 scripts/embed-trust.py --check <installer>`. Release assets are generated exclusively with `python3 scripts/embed-trust.py <source-installer> <new-output>` before checksums; generation never supplies publisher pins. The product site copies those canonical source installers, with no downloaded verifier bootstrap. On Linux, `install.sh` requires Python 3 and `xdg-mime` (`xdg-utils`). It installs `retype-uri.desktop` under `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) for notification identity and `retype://` dispatch, and `retype.service` under `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`). Both entries use the absolute installation path. New services stay disabled; enablement is unchanged on updates, and an already active service drains its conversions before restarting. Without a running user manager for that configuration directory, the unit is available on the next user-manager start. Linux desktop support is Wayland-only.
+Source installers contain complete canonical verifier blocks, checked with `python3 scripts/embed-trust.py --check <installer>`. Signed release installers embed only independently approved public pins, before checksums. Use independently trusted pinned installers for signed installation; the product site's unconfigured source copy is not a trust root. No installer downloads its own verifier. On Linux, `install.sh` requires Python 3.12 or newer and `xdg-mime` (`xdg-utils`). It validates archive paths and file types before extraction, then installs `retype-uri.desktop` under `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) for notification identity and `retype://` dispatch, and `retype.service` under `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`). Both entries use the absolute installation path. New services stay disabled; enablement is unchanged on updates, and an already active owned service drains its conversions before restarting. Linux desktop support is Wayland-only.
 
 Start the installed service explicitly when automatic watching should persist across logins:
 
@@ -88,7 +95,7 @@ bash "$HOME/.local/share/retype/packaging/install.sh" --uninstall
 # Include --prefix if the installation used a custom prefix.
 ```
 
-Removal stops and disables the owned service, removes installed files, restores overwritten desktop/unit definitions and previous URI preferences, and preserves configuration, watches and recovery data. Modified definitions and URI choices made after installation are preserved. Each update/removal keeps a persistent `share/retype-backup.*` directory, including integration rollback records. Other MIME preferences are preserved. One prefix owns these per-user definitions; remove it before installing under another prefix. Use the original `XDG_CONFIG_HOME` and `XDG_DATA_HOME` for updates and removal. Windows preview installs the CLI/assets and user PATH token, but no URI, notifier identity, menu shortcut or startup entry. Removal removes only the installer-added PATH token. macOS app/native installation remains gated on safe extraction, native signing and an authorized user profile.
+Removal stops and disables the owned service and drains an unsupervised daemon from the installation in the selected state directory (`RETYPE_STATE_DIR`, otherwise the default). It never spawns a daemon, contacts an unrelated daemon for shutdown, or forces a supervised daemon to exit. A drain timeout leaves the installation in place. Removal restores overwritten desktop/unit definitions and previous URI preferences, and preserves configuration, watches and recovery data. Modified definitions and URI choices made after installation are preserved. Each update/removal keeps a persistent `share/retype-backup.*` directory, including integration rollback records. One prefix owns these per-user definitions; remove it before installing under another prefix. Use the original `XDG_CONFIG_HOME` and `XDG_DATA_HOME` for updates and removal. Windows preview installs the CLI/assets and user PATH token, but no URI, notifier identity, menu shortcut or startup entry. macOS signed installation still requires native signing and an authorized user profile.
 
 ## Per platform
 
@@ -100,14 +107,15 @@ Removal stops and disables the owned service, removes installed files, restores 
 
 The launchd plist, Linux desktop entry and systemd unit name the install prefix as `@PREFIX@`; the installer substitutes and escapes it for the destination format.
 
-Signing is mandatory for tagged publication and installed-tier execution. All platforms require the final publisher-signed manifest. Windows additionally requires Authenticode with an independently pinned publisher certificate and a secure timestamp. macOS requires Developer ID, hardened runtime and notarisation; both app and CLI use `com.lapilliworks.retype.cli`. Sign fresh staging outputs, copy the final signed inner CLI to `bin/retype`, and require byte equality. Native macOS extraction, metadata/staple preservation and installed qualification remain blocked; no USTAR/no-xattrs restriction is adopted to hide those gaps.
+Signing is mandatory for tagged publication and installed-tier execution. All platforms require the final publisher-signed manifest. Windows additionally requires Authenticode with an independently pinned publisher certificate and a secure timestamp. macOS requires Developer ID, hardened runtime and notarisation; both app and CLI use `com.lapilliworks.retype.cli`. Sign fresh staging outputs, copy the final signed inner CLI to `bin/retype`, and require byte equality. Qualify extraction and metadata/staple preservation on the exact macOS archive; no USTAR/no-xattrs restriction substitutes for that check.
 
-Required input names are documented here, not configured or populated by CI:
+Required public inputs for the protected environment and native preparation:
 
 | Input | Meaning |
 |---|---|
 | `RETYPE_PUBLISHER_KEY` | Independently approved minisign public key value |
-| `RETYPE_SIGNING_KEY_FILE` | Existing approved private-key path for final manifest signing |
+| `RETYPE_MACOS_TEAM_ID`, `RETYPE_PUBLISHER_CERTIFICATE_SHA256` | Independently approved Apple Team ID and Authenticode certificate pin |
+| `RETYPE_CANDIDATE_RELEASE_ID`, `RETYPE_CANDIDATE_QUALIFICATION_SHA256` | Approved draft release ID and SHA-256 of the exact reviewed qualification statement |
 | macOS Team ID, existing signing identity, existing notary profile | Explicit approved selectors for `scripts/sign-macos.sh`; fixed app/CLI IDs, no new keychain identities |
 | Windows `SignTool`, `CertificateThumbprint`, `PublisherCertificateSha256`, `TimestampUrl` | Explicit inputs for `scripts/sign-windows.ps1`; existing CurrentUser/My SHA1 selector, independent SHA256 pin, HTTPS RFC3161 endpoint |
 

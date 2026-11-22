@@ -79,7 +79,7 @@ jobs:
       - name: Prepare installer test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin
+          sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin minisign
       - name: Parse Unix packaging and signing scripts
         run: |
           for file in packaging/install.sh packaging/trust/*.sh scripts/sign-release.sh scripts/sign-macos.sh; do

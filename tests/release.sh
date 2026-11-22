@@ -83,4 +83,6 @@ expect_failure existing-signature
 [ "$(< "$tmp/existing-signature/SHA256SUMS.minisig")" = 'preserve signature bytes' ]
 [ ! -e "$tmp/existing-signature/SHA256SUMS" ]
 
+python3 "$root/tests/test_release_candidate.py" "$tmp"
+
 printf 'Release assembly tests passed.\n'

@@ -6,7 +6,7 @@ The first-release qualification target is Windows 10 22H2 AMD64. Other Windows c
 
 Run `packaging/install.ps1` from a native, non-elevated PowerShell session. The default prefix is `%LOCALAPPDATA%\Programs\retype`; `RETYPE_PREFIX` selects another fixed local NTFS prefix. Reparse paths, network paths, drive roots and command/PATH-delimited prefixes are refused.
 
-Signed delivery is the default. It requires an independently trusted installer, `minisign`, an independently approved `RETYPE_PUBLIC_KEY` and `RETYPE_PUBLISHER_CERTIFICATE_SHA256`, and these release artifacts:
+Signed delivery is the default. It requires an independently trusted installer, `minisign`, and independently approved publisher and certificate pins. Release installers embed the pins; when running unconfigured source, supply `RETYPE_PUBLIC_KEY` and `RETYPE_PUBLISHER_CERTIFICATE_SHA256` from an independent trusted source. Signed delivery checks these release artifacts:
 
 - `SHA256SUMS` and its detached `SHA256SUMS.minisig` signature
 - The exact native archive named by that authenticated manifest

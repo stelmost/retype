@@ -2,8 +2,13 @@
 # Assemble verified build archives and installers in a private release directory.
 set -euo pipefail
 
+embed_options=()
+if [ "${1:-}" = --signed ]; then
+	embed_options=(--signed)
+	shift
+fi
 if [ "$#" -ne 1 ]; then
-	printf 'Usage: %s <release-directory>\n' "$0" >&2
+	printf 'Usage: %s [--signed] <release-directory>\n' "$0" >&2
 	exit 2
 fi
 
@@ -30,8 +35,8 @@ for file in install.sh install.ps1 install.sh.sha256 install.ps1.sha256 SHA256SU
 	fi
 done
 
-python3 "$root/scripts/embed-trust.py" "$root/packaging/install.sh" install.sh
-python3 "$root/scripts/embed-trust.py" "$root/packaging/install.ps1" install.ps1
+python3 "$root/scripts/embed-trust.py" "${embed_options[@]}" "$root/packaging/install.sh" install.sh
+python3 "$root/scripts/embed-trust.py" "${embed_options[@]}" "$root/packaging/install.ps1" install.ps1
 sha256sum -- *.tar.gz install.sh install.ps1 > SHA256SUMS
 sha256sum -- install.sh > install.sh.sha256
 sha256sum -- install.ps1 > install.ps1.sha256

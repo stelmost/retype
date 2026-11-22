@@ -18,6 +18,10 @@
 	Set-StrictMode -Version Latest
 	$ErrorActionPreference = 'Stop'
 	$ProgressPreference = 'SilentlyContinue'
+	$publisherKey = ''
+	$publisherCertificateSha256 = ''
+	if (-not $publisherKey) { $publisherKey = $env:RETYPE_PUBLIC_KEY }
+	if (-not $publisherCertificateSha256) { $publisherCertificateSha256 = $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256 }
 
 # BEGIN RETYPE_RELEASE_TRUST
 function Assert-RetypeReleaseTrust {
@@ -439,7 +443,7 @@ function Assert-RetypeWindowsTrust {
 	try {
 		if ($Action -eq 'install') {
 			if ($Mode -eq 'signed') {
-				if (-not $env:RETYPE_PUBLIC_KEY -or $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+		if (-not $publisherKey -or $publisherCertificateSha256 -notmatch '^[a-fA-F0-9]{64}$') {
 					throw 'retype trust: signed delivery requires independently approved publisher public key and certificate SHA256.'
 				}
 			} else {
@@ -479,7 +483,7 @@ function Assert-RetypeWindowsTrust {
 			if ($Mode -eq 'signed') {
 				$signaturePath = Join-Path $temp 'SHA256SUMS.minisig'
 				Invoke-WebRequest -UseBasicParsing -Uri "$Base/SHA256SUMS.minisig" -OutFile $signaturePath
-				Assert-RetypeReleaseTrust -Archive $archivePath -Checksums $sumsPath -Signature $signaturePath -PublicKey $env:RETYPE_PUBLIC_KEY
+		Assert-RetypeReleaseTrust -Archive $archivePath -Checksums $sumsPath -Signature $signaturePath -PublicKey $publisherKey
 			}
 			$tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop
 			$members = @(& $tar.Source -tzf $archivePath)
@@ -530,13 +534,13 @@ function Assert-RetypeWindowsTrust {
 				if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$Archive does not contain $relative." }
 				Assert-RetypeExecutable $path $executableSubsystems[$relative]
 				if ($Mode -eq 'signed') {
-					Assert-RetypeWindowsTrust -Path $path -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
+			Assert-RetypeWindowsTrust -Path $path -PublisherCertificateSha256 $publisherCertificateSha256
 				}
 			}
 			$sourceShortcut = Join-Path $source 'share\retype\packaging\windows\shortcut.ps1'
 			if ($Mode -eq 'signed') {
 				if (-not (Test-Path -LiteralPath $sourceShortcut -PathType Leaf)) { throw 'The release has no Windows shortcut identity helper.' }
-				Assert-RetypeWindowsTrust -Path $sourceShortcut -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
+		Assert-RetypeWindowsTrust -Path $sourceShortcut -PublisherCertificateSha256 $publisherCertificateSha256
 				. $sourceShortcut
 			}
 		}
@@ -594,7 +598,7 @@ function Assert-RetypeWindowsTrust {
 			$stagedBinary = ($files | Where-Object Path -eq 'bin/retype.exe').Stage
 			if ($Mode -eq 'signed') {
 				foreach ($file in $files | Where-Object { $executableSubsystems.Contains($_.Path) }) {
-					Assert-RetypeWindowsTrust -Path $file.Stage -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
+			Assert-RetypeWindowsTrust -Path $file.Stage -PublisherCertificateSha256 $publisherCertificateSha256
 				}
 			}
 			$output = & $stagedBinary --version 2>&1

@@ -52,7 +52,7 @@ jobs:
       - name: Prepare installer test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin
+          sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin minisign
       - run: bash -n packaging/install.sh
       - run: bash tests/install.sh
       - run: python3 tests/test_installed.py
@@ -62,51 +62,23 @@ jobs:
       - run: test -s packaging/install.ps1
 
   package:
-    name: assemble ${{ github.event_name == 'workflow_dispatch' && 'unsigned preview' || 'signed release' }} assets
+    name: assemble unsigned preview assets
+    if: github.event_name == 'workflow_dispatch'
     needs: [native, debian]
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: ${{ github.event_name == 'workflow_dispatch' && 'retype-preview-*' || 'retype-signed-*' }}
+          pattern: retype-preview-*
           path: dist
           merge-multiple: true
-      - name: Require every signed and qualified primary archive
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        shell: bash
-        run: |
-          set -euo pipefail
-          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
-            archive="dist/retype-$GITHUB_REF_NAME-$target.tar.gz"
-            test -s "$archive" || { echo "Missing signed/qualified archive: $archive" >&2; exit 1; }
-          done
       - name: Verify archives and generate canonical installer closure
         run: bash scripts/assemble-release.sh dist
-      - name: Sign and verify the final publisher manifest
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/sign-release.sh dist \
-            "${RETYPE_SIGNING_KEY_FILE:?An approved existing key path is required}" \
-            "${RETYPE_PUBLISHER_KEY:?An independently approved publisher key is required}"
-          for asset in dist/*.tar.gz dist/install.sh dist/install.ps1; do
-            bash packaging/trust/verify.sh "$asset" dist/SHA256SUMS dist/SHA256SUMS.minisig "$RETYPE_PUBLISHER_KEY"
-          done
-      - name: Attest signed and qualified native archives
-        if: github.event_name == 'push' && github.ref_type == 'tag'
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event_name == 'workflow_dispatch' && 'unsigned-preview-assets' || 'release-assets' }}
+          name: unsigned-preview-assets
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
@@ -115,47 +87,62 @@ jobs:
             dist/install.sh.sha256
             dist/install.ps1.sha256
             dist/SHA256SUMS
-            dist/SHA256SUMS.minisig
           if-no-files-found: error
 
   publish:
     name: publish signed release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [verify, package, checks, native, debian]
+    needs: [verify, checks, native, debian]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: signed-release
+    concurrency:
+      group: signed-release-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-assets
-          path: dist
-      - name: Verify publisher-authenticated release assets
+      - name: Install public signature verifier
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+      - name: Download the approved draft into private staging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RELEASE_ID: ${{ vars.RETYPE_CANDIDATE_RELEASE_ID }}
+          TAG: ${{ github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
-          for asset in dist/*.tar.gz dist/install.sh dist/install.ps1; do
-            bash packaging/trust/verify.sh "$asset" dist/SHA256SUMS dist/SHA256SUMS.minisig \
-              "${RETYPE_PUBLISHER_KEY:?An independently approved publisher key is required}"
-          done
+          [[ $CANDIDATE_RELEASE_ID =~ ^[1-9][0-9]*$ ]] || { echo 'No approved draft release ID' >&2; exit 1; }
+          candidate=$(gh api "repos/$GITHUB_REPOSITORY/releases/$CANDIDATE_RELEASE_ID")
+          jq -e --arg tag "candidate-$TAG" '.draft and .tag_name == $tag' <<< "$candidate" >/dev/null
+          assets=$(jq -er '.assets[] | select(.state == "uploaded") | [.id, .name] | @tsv' <<< "$candidate")
+          umask 077
+          directory=$(mktemp -d "$RUNNER_TEMP/retype-release.XXXXXX")
+          while IFS=$'\t' read -r id name; do
+            [[ $id =~ ^[1-9][0-9]*$ && $name =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && ! -e "$directory/$name" ]]
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$directory/$name"
+          done <<< "$assets"
+          printf 'RETYPE_RELEASE_ASSETS=%s\n' "$directory" >> "$GITHUB_ENV"
+      - name: Verify the publisher and exact qualified candidate
+        env:
+          RETYPE_CANDIDATE_QUALIFICATION_SHA256: ${{ vars.RETYPE_CANDIDATE_QUALIFICATION_SHA256 }}
+          RETYPE_PUBLISHER_KEY: ${{ vars.RETYPE_PUBLISHER_KEY }}
+          RETYPE_MACOS_TEAM_ID: ${{ vars.RETYPE_MACOS_TEAM_ID }}
+          RETYPE_PUBLISHER_CERTIFICATE_SHA256: ${{ vars.RETYPE_PUBLISHER_CERTIFICATE_SHA256 }}
+          TAG: ${{ github.ref_name }}
+        run: python3 scripts/verify-release-candidate.py "$RETYPE_RELEASE_ASSETS" "$TAG" "$(git rev-parse HEAD)"
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          prerelease=''
-          case "$TAG" in *-*) prerelease='--prerelease' ;; esac
-          assets=(dist/*.tar.gz dist/*.tar.gz.sha256 dist/install.sh dist/install.ps1
-            dist/install.sh.sha256 dist/install.ps1.sha256 dist/SHA256SUMS dist/SHA256SUMS.minisig)
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # A retry must not replace an existing published asset.
-            gh release upload "$TAG" "${assets[@]}"
-          else
-            # shellcheck disable=SC2086
-            gh release create "$TAG" "${assets[@]}" --title "$TAG" --generate-notes $prerelease
-          fi
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes \
+            "${prerelease[@]}" "$RETYPE_RELEASE_ASSETS"/*
