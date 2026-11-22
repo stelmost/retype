@@ -244,6 +244,25 @@ impl Server {
 		)
 	}
 
+	#[cfg(any(unix, windows))]
+	pub(super) fn serve_peer(
+		server: &Mutex<&mut Self>,
+		read: impl FnMut() -> std::result::Result<Option<serde_json::Value>, retype_ipc::FrameError>,
+		write: impl FnMut(&Response) -> std::result::Result<(), retype_ipc::FrameError>,
+		first: Option<serde_json::Value>,
+	) -> Result<()> {
+		Self::serve_frames(read, write, first, |request| {
+			use std::io::{Error, ErrorKind};
+			let mut server = server
+				.lock()
+				.map_err(|_| Error::other("daemon control lock poisoned"))?;
+			if server.stopped() {
+				return Err(Error::from(ErrorKind::ConnectionAborted).into());
+			}
+			server.reply(request)
+		})
+	}
+
 	fn reply(&mut self, request: ConnectionRequest<'_>) -> Result<Response> {
 		match request {
 			ConnectionRequest::Greeting(id) => Ok(Response::ok(id, self.hello())?),
@@ -1621,7 +1640,10 @@ impl Server {
 	}
 }
 
-fn write_response(writer: &mut impl Write, response: &Response) -> std::result::Result<(), retype_ipc::FrameError> {
+pub(super) fn write_response(
+	writer: &mut impl Write,
+	response: &Response,
+) -> std::result::Result<(), retype_ipc::FrameError> {
 	match retype_ipc::write_frame(writer, response) {
 		Err(retype_ipc::FrameError::TooLarge(_)) => retype_ipc::write_frame(
 			writer,

@@ -1,11 +1,12 @@
 //! The daemon: one per user session, the only writer of state, `docs/dev/architecture/ipc.md`.
 //!
-//! Connections are served one at a time, which is enough while every method is a
-//! request and answer, and the event ring is read the same way: a client asks for
-//! what followed the last sequence it saw rather than holding a stream open.
+//! Peer I/O runs separately from serialized requests. A client reads the event ring
+//! by asking what followed its last sequence, rather than holding a stream open.
 
 pub mod batches;
 mod cancel;
+#[cfg(any(unix, windows))]
+mod connections;
 mod disposition;
 pub mod events;
 pub mod immediate;
@@ -140,10 +141,11 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 		eprintln!("retype: daemon listening on {name} (pid {})", std::process::id());
 	}
 
+	let mut seen = signals::Seen::now();
 	signals::install();
-	let result = pipe::serve(&name, &mut server);
+	let result = pipe::serve(&name, &mut server, &mut seen);
 
-	signals::drain(&mut server);
+	signals::drain_since(&mut server, seen);
 
 	timer.0.store(true, std::sync::atomic::Ordering::Relaxed);
 	let _ = timer.1.join();
@@ -158,7 +160,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	state::clear_endpoint(&state_dir);
 	server.finish_stop();
 	lifecycle::finish(&state_dir, result.as_ref().err().map(|error| error.code().to_string()))?;
-	if signals::stop_requested() { Ok(()) } else { result }
+	result
 }
 
 #[cfg(not(any(unix, windows)))]

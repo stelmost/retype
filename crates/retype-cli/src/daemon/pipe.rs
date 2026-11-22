@@ -1,31 +1,37 @@
 //! The named-pipe transport, `docs/dev/architecture/ipc.md` §4.
 //!
-//! One instance at a time, created before each client and closed after it, which
-//! is what allows one connection at a time while every method is a request and an answer.
+//! Pipe instances are owned by the listener until connection, then by a bounded peer worker.
 
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{self, BufReader, Read, Write};
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::ptr;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
+use windows_sys::Win32::Foundation::{
+	ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, ERROR_PIPE_LISTENING, ERROR_PIPE_NOT_CONNECTED, HANDLE,
+	INVALID_HANDLE_VALUE, LocalFree,
+};
 use windows_sys::Win32::Security::Authorization::{
 	ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
 };
 use windows_sys::Win32::Security::{
 	GetTokenInformation, PSECURITY_DESCRIPTOR, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
-use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
 use windows_sys::Win32::System::Pipes::{
-	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ImpersonateNamedPipeClient, PIPE_READMODE_BYTE,
-	PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ImpersonateNamedPipeClient, PIPE_NOWAIT,
+	PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-use crate::daemon::Server;
+use super::server::{Server, write_response};
+use super::{connections, signals};
 use crate::error::{Error, Result};
 
 /// Owner may read and write, nobody else may do anything. `P` makes the DACL
@@ -34,6 +40,7 @@ const OWNER_ONLY: &str = "D:P(A;;GA;;;OW)";
 
 const SDDL_REVISION_1: u32 = 1;
 const BUFFER_BYTES: u32 = 64 * 1024;
+const IO_POLL: Duration = Duration::from_millis(10);
 const NUL: u16 = 0;
 
 /// `\\.\pipe\retype-<machine>-<user>`, `docs/dev/architecture/ipc.md` §4.
@@ -41,7 +48,7 @@ pub fn name(machine: &str) -> String {
 	format!(r"\\.\pipe\retype-{machine}-{}", user_token())
 }
 
-pub fn serve(name: &str, server: &mut Server) -> Result<()> {
+pub fn serve(name: &str, server: &mut Server, seen: &mut signals::Seen) -> Result<()> {
 	let name = wide(name);
 	let descriptor = Descriptor::create()?;
 	let attributes = SECURITY_ATTRIBUTES {
@@ -49,109 +56,201 @@ pub fn serve(name: &str, server: &mut Server) -> Result<()> {
 		lpSecurityDescriptor: descriptor.0,
 		bInheritHandle: 0,
 	};
-
-	while !server.stopped() {
-		let handle = unsafe {
-			CreateNamedPipeW(
-				name.as_ptr(),
-				PIPE_ACCESS_DUPLEX,
-				PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-				PIPE_UNLIMITED_INSTANCES,
-				BUFFER_BYTES,
-				BUFFER_BYTES,
-				0,
-				&attributes,
-			)
-		};
-
-		if handle == INVALID_HANDLE_VALUE {
-			return Err(Error::Io(std::io::Error::last_os_error()));
-		}
-
-		crate::daemon::signals::watch_pipe(handle as usize);
-		let connected = match connect(handle) {
-			Ok(connected) => connected,
-			Err(error) => {
-				if crate::daemon::signals::unwatch_pipe(handle as usize) {
-					unsafe { close(handle) };
-				}
-				if crate::daemon::signals::stop_requested() {
-					break;
-				}
-				return Err(error);
-			}
-		};
-		crate::daemon::signals::unwatch_pipe(handle as usize);
-
-		if !connected {
-			// A failed connect leaves nothing to serve, and the instance cannot
-			// be reused, so it is closed rather than retried.
-			unsafe { close(handle) };
-			continue;
-		}
-
-		super::server::connection_result(serve_client(handle, server))?;
-	}
-
-	Ok(())
+	let mut listener = instance(&name, &attributes)?;
+	connections::serve(
+		server,
+		seen,
+		move || accept(&mut listener, &name, &attributes),
+		serve_client,
+	)
 }
 
-fn serve_client(handle: HANDLE, server: &mut Server) -> Result<()> {
-	let file = unsafe { File::from_raw_handle(handle) };
-	let mut reader = BufReader::new(file.try_clone()?);
-	let mut writer = &file;
-
-	// Impersonation is the authentication, and a pipe can only be impersonated
-	// once its client has written, `docs/dev/architecture/ipc.md` §4. So the first frame is read
-	// first: a client that will not send one is not a client, and a client that
-	// sends one has given us something to impersonate.
-	let first = match retype_ipc::read_frame(&mut reader) {
-		Ok(Some(frame)) => frame,
-		Ok(None) => {
-			unsafe {
-				flush_and_disconnect(handle);
-			}
-			drop(file);
-			return Ok(());
-		}
-		Err(error) => {
-			eprintln!("retype: refused a pipe client that sent no readable frame: {error}");
-			unsafe {
-				flush_and_disconnect(handle);
-			}
-			drop(file);
-			return Ok(());
-		}
+fn instance(name: &[u16], attributes: &SECURITY_ATTRIBUTES) -> io::Result<File> {
+	let handle = unsafe {
+		CreateNamedPipeW(
+			name.as_ptr(),
+			PIPE_ACCESS_DUPLEX,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+			/* The worker pool, not client-owned closing ends, bounds the daemon's active instances. */
+			PIPE_UNLIMITED_INSTANCES,
+			BUFFER_BYTES,
+			BUFFER_BYTES,
+			0,
+			attributes,
+		)
 	};
-
-	if unsafe { ImpersonateNamedPipeClient(handle) } == 0 {
-		eprintln!(
-			"retype: refused a pipe client that could not be impersonated: {}",
-			std::io::Error::last_os_error()
-		);
-		unsafe {
-			flush_and_disconnect(handle);
-		}
-		drop(file);
-		return Ok(());
+	if handle == INVALID_HANDLE_VALUE {
+		return Err(io::Error::last_os_error());
 	}
-	unsafe { RevertToSelf() };
-
-	let result = server.serve_connection_from(&mut reader, &mut writer, Some(first));
-
-	unsafe { flush_and_disconnect(handle) };
-	drop(file);
-
-	result
+	Ok(unsafe { File::from_raw_handle(handle) })
 }
 
-fn connect(handle: HANDLE) -> Result<bool> {
-	if unsafe { ConnectNamedPipe(handle, ptr::null_mut()) } != 0 {
-		return Ok(true);
+fn accept(listener: &mut File, name: &[u16], attributes: &SECURITY_ATTRIBUTES) -> Result<Option<File>> {
+	/* In PIPE_NOWAIT mode success enables listening; ERROR_PIPE_CONNECTED transfers ownership. */
+	if unsafe { ConnectNamedPipe(listener.as_raw_handle(), ptr::null_mut()) } != 0 {
+		return Ok(None);
+	}
+	let error = io::Error::last_os_error();
+	match error.raw_os_error().map(|code| code as u32) {
+		Some(ERROR_PIPE_LISTENING) => Ok(None),
+		Some(ERROR_PIPE_CONNECTED) => Ok(Some(std::mem::replace(listener, instance(name, attributes)?))),
+		Some(ERROR_NO_DATA | ERROR_PIPE_NOT_CONNECTED) => {
+			*listener = instance(name, attributes)?;
+			Ok(None)
+		}
+		_ => Err(error.into()),
+	}
+}
+
+fn serve_client(file: File, server: &Mutex<&mut Server>, stopping: &AtomicBool) -> Result<()> {
+	let mut reader = BufReader::new(PipeIo::new(&file, Some(stopping)));
+	let mut writer = PipeIo::new(&file, None);
+
+	/* The first read supplies the client context for impersonation. No request runs before that check. */
+	let Some(first) = read_request(&mut reader, stopping).unwrap_or_else(|error| {
+		eprintln!("retype: refused a pipe client that sent no readable frame: {error}");
+		None
+	}) else {
+		unsafe { DisconnectNamedPipe(file.as_raw_handle()) };
+		return Ok(());
+	};
+	if unsafe { ImpersonateNamedPipeClient(file.as_raw_handle()) } == 0 {
+		let error = io::Error::last_os_error();
+		unsafe { DisconnectNamedPipe(file.as_raw_handle()) };
+		return Err(io::Error::new(error.kind(), format!("cannot impersonate the pipe client: {error}")).into());
+	}
+	if unsafe { RevertToSelf() } == 0 {
+		/* Never dispatch a request or reuse this thread under the client's token. */
+		return Err(io::Error::other(format!(
+			"cannot leave pipe client impersonation: {}",
+			io::Error::last_os_error()
+		))
+		.into());
 	}
 
-	let error = std::io::Error::last_os_error();
-	Ok(error.raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32))
+	/* Close the owned end rather than flushing until the peer reads or discarding unread replies with Disconnect. */
+	Server::serve_peer(
+		server,
+		|| read_request(&mut reader, stopping),
+		|response| {
+			writer.begin_frame();
+			write_response(&mut writer, response)
+		},
+		Some(first),
+	)
+}
+
+fn read_request(
+	reader: &mut BufReader<PipeIo<'_>>,
+	stopping: &AtomicBool,
+) -> std::result::Result<Option<serde_json::Value>, retype_ipc::FrameError> {
+	if stopping.load(Ordering::Relaxed) {
+		return Ok(None);
+	}
+	reader.get_mut().begin_frame();
+	let result = retype_ipc::read_frame(reader);
+	if stopping.load(Ordering::Relaxed) {
+		Ok(None)
+	} else {
+		result
+	}
+}
+
+struct PipeIo<'a> {
+	file: &'a File,
+	stopping: Option<&'a AtomicBool>,
+	deadline: Instant,
+}
+
+impl<'a> PipeIo<'a> {
+	fn new(file: &'a File, stopping: Option<&'a AtomicBool>) -> Self {
+		Self {
+			file,
+			stopping,
+			deadline: Instant::now(),
+		}
+	}
+
+	fn begin_frame(&mut self) {
+		self.deadline = Instant::now() + connections::FRAME_TIMEOUT;
+	}
+
+	fn transfer(&self, mut step: impl FnMut() -> io::Result<usize>) -> io::Result<usize> {
+		loop {
+			if self.stopping.is_some_and(|stopping| stopping.load(Ordering::Relaxed)) {
+				return Err(io::ErrorKind::ConnectionAborted.into());
+			}
+			let remaining = self.deadline.saturating_duration_since(Instant::now());
+			if remaining.is_zero() {
+				return Err(io::Error::new(io::ErrorKind::TimedOut, "IPC frame deadline elapsed"));
+			}
+			match step() {
+				Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(remaining.min(IO_POLL)),
+				result => return result,
+			}
+		}
+	}
+}
+
+impl Read for PipeIo<'_> {
+	fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+		if buffer.is_empty() {
+			return Ok(0);
+		}
+		self.transfer(|| {
+			let mut read = 0;
+			/* Synchronous PIPE_NOWAIT calls never retain a pointer to the buffer. */
+			let success = unsafe {
+				ReadFile(
+					self.file.as_raw_handle(),
+					buffer.as_mut_ptr(),
+					buffer.len().min(u32::MAX as usize) as u32,
+					&mut read,
+					ptr::null_mut(),
+				)
+			};
+			if success != 0 {
+				return Ok(read as usize);
+			}
+			let error = io::Error::last_os_error();
+			match error.raw_os_error().map(|code| code as u32) {
+				Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED) => Ok(0),
+				Some(ERROR_NO_DATA) => Err(io::ErrorKind::WouldBlock.into()),
+				_ => Err(error),
+			}
+		})
+	}
+}
+
+impl Write for PipeIo<'_> {
+	fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+		if buffer.is_empty() {
+			return Ok(0);
+		}
+		self.transfer(|| {
+			let mut written = 0;
+			let success = unsafe {
+				WriteFile(
+					self.file.as_raw_handle(),
+					buffer.as_ptr(),
+					buffer.len().min(u32::MAX as usize) as u32,
+					&mut written,
+					ptr::null_mut(),
+				)
+			};
+			if success == 0 {
+				Err(io::Error::last_os_error())
+			} else if written == 0 {
+				Err(io::ErrorKind::WouldBlock.into())
+			} else {
+				Ok(written as usize)
+			}
+		})
+	}
+
+	fn flush(&mut self) -> io::Result<()> {
+		Ok(())
+	}
 }
 
 fn wide(text: &str) -> Vec<u16> {
@@ -216,13 +315,6 @@ fn sid() -> Option<String> {
 		let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, length));
 		LocalFree(text.cast());
 		Some(sid)
-	}
-}
-
-unsafe fn flush_and_disconnect(handle: HANDLE) {
-	unsafe {
-		FlushFileBuffers(handle);
-		DisconnectNamedPipe(handle);
 	}
 }
 

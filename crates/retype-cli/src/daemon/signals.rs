@@ -75,12 +75,7 @@ pub fn install() {
 	}
 }
 
-/// Windows has console control events instead. A handler may only return quickly,
-/// so it counts and closes the listening pipe, which is what makes a blocked
-/// `ConnectNamedPipe` return and lets the daemon reach its drain.
-#[cfg(windows)]
-static PIPE: AtomicUsize = AtomicUsize::new(0);
-
+/// Windows console events also only count. The listener polls without surrendering its handle.
 #[cfg(windows)]
 pub fn install() {
 	use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
@@ -91,33 +86,8 @@ pub fn install() {
 }
 
 #[cfg(windows)]
-pub fn watch_pipe(handle: usize) {
-	PIPE.store(handle, Ordering::SeqCst);
-}
-
-/// Return whether this caller still owns the handle, so it closes it exactly once.
-#[cfg(windows)]
-pub fn unwatch_pipe(handle: usize) -> bool {
-	PIPE.compare_exchange(handle, 0, Ordering::SeqCst, Ordering::SeqCst)
-		.is_ok()
-}
-
-#[cfg(windows)]
-pub fn stop_requested() -> bool {
-	SEEN.load(Ordering::Relaxed) > 0
-}
-
-#[cfg(windows)]
 unsafe extern "system" fn handle_console(_: u32) -> i32 {
 	SEEN.fetch_add(1, Ordering::Relaxed);
-
-	let handle = PIPE.swap(0, Ordering::SeqCst);
-	if handle != 0 {
-		unsafe {
-			windows_sys::Win32::Foundation::CloseHandle(handle as *mut std::ffi::c_void);
-		}
-	}
-
 	1
 }
 
@@ -130,8 +100,10 @@ pub fn install() {}
 /// already stopped accepting when a drain begins, and a person who sends a second
 /// `SIGTERM` is talking to the wait, not to the loop.
 pub fn drain(server: &mut crate::daemon::server::Server) {
-	let mut seen = Seen::now();
+	drain_since(server, Seen::now());
+}
 
+pub(super) fn drain_since(server: &mut crate::daemon::server::Server, mut seen: Seen) {
 	while !server.idle() {
 		let (asked, next) = seen.asked();
 		seen = next;
