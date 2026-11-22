@@ -13,6 +13,7 @@ if ($architecture -notin @('X64', 'Arm64') -or [Runtime.InteropServices.RuntimeI
 }
 $Root = Split-Path $PSScriptRoot -Parent
 $Binary = [IO.Path]::GetFullPath($Binary)
+$Review = Join-Path (Split-Path -Parent $Binary) 'retype-review.exe'
 if (-not $Report) {
 	$parent = if ($env:RETYPE_TEST_REPORT_DIR) { $env:RETYPE_TEST_REPORT_DIR } else { Join-Path $env:LOCALAPPDATA 'retype-test-reports' }
 	$Report = Join-Path $parent ('installer-' + [guid]::NewGuid().ToString('N'))
@@ -114,15 +115,16 @@ function Assert-RetypeWindowsTrust {
 	if ($script:Trace -notcontains 'manifest' -or -not (Test-Path $Path) -or $PublisherCertificateSha256 -ne ('0' * 64)) {
 		throw 'Synthetic platform hook ran before manifest verification or without fixture inputs'
 	}
-	$script:Trace += if ($Path.EndsWith('.ps1')) { 'script' } else { 'executable' }
+	$script:Trace += [IO.Path]::GetFileName($Path)
 }
 function Move-Item {
 	param($LiteralPath, $Destination, [switch]$Force)
 	$leaf = [IO.Path]::GetFileName($LiteralPath)
 	$kind = if ($leaf.StartsWith('.retype-install.')) { 'receipt' }
 		elseif ($leaf.StartsWith('.retype.') -and $Destination.EndsWith('\retype.exe')) { 'binary' }
+		elseif ($leaf.StartsWith('.retype.') -and $Destination.EndsWith('\retype-review.exe')) { 'review' }
 		elseif ($leaf.StartsWith('.retype.') -and $Destination.EndsWith('\fidelity.toml')) { 'asset' }
-		elseif ($Destination.EndsWith('\removed-retype.exe')) { 'removal' } else { '' }
+		elseif ($Destination.EndsWith('\removed-retype-review.exe')) { 'removal' } else { '' }
 	if ($kind -and $script:FailPublication -eq $kind) {
 		$script:FailPublication = $null
 		throw "Simulated $kind publication failure"
@@ -141,6 +143,7 @@ function Installed-Snapshot {
 	foreach ($key in @($script:Registry.Keys | Sort-Object)) { $orderedRegistry[$key] = $script:Registry[$key] }
 	return Snapshot ([ordered]@{
 		Binary = Hash (Join-Path $Prefix 'bin\retype.exe')
+		Review = Hash (Join-Path $Prefix 'bin\retype-review.exe')
 		Asset = Hash (Join-Path $Prefix 'share\retype\fidelity.toml')
 		Receipt = Hash (Join-Path $Prefix '.retype-install.json')
 		Shortcut = Hash (Join-Path $Programs 'retype.lnk')
@@ -164,7 +167,8 @@ function Refused([string]$Label, [string]$Message) {
 try {
 	$revision = & git -C $Root rev-parse HEAD
 	if ($LASTEXITCODE -ne 0) { throw 'The exact source revision is required.' }
-	@{ Revision = $revision; Binary = $Binary; BinarySha256 = Hash $Binary; User = $identity.Name; Elevated = $false;
+	@{ Revision = $revision; Binary = $Binary; BinarySha256 = Hash $Binary; ReviewSha256 = Hash $Review;
+		User = $identity.Name; Elevated = $false;
 		OSVersion = [Environment]::OSVersion.Version.ToString(); Architecture = $architecture;
 		Scope = 'Synthetic publisher/URI/AppID/Run/PATH boundaries; native private NTFS, registry backend and shell-link property' } |
 		ConvertTo-Json | Set-Content (Join-Path $Report 'identity.json') -Encoding UTF8
@@ -258,11 +262,24 @@ try {
 	$env:RETYPE_PUBLIC_KEY = 'FIXTURE-ONLY-NOT-PUBLISHER-TRUST'; $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256 = '0' * 64
 	$plain = @([ordered]@{ Name = ''; Values = @([ordered]@{ Name = 'DisplayName'; Kind = 'String'; Value = 'retype' }) })
 	$Registry[$IdentityKey] = Clone $plain
+	Refused 'missing-review' 'does not contain bin/retype-review.exe'
+	$SourceReview = Join-Path $Release 'bin\retype-review.exe'
+	Copy-Item -LiteralPath $Binary -Destination $SourceReview
+	Pack-Release 'console-review'
+	Refused 'console-review' 'Unexpected Windows executable subsystem'
+	Check 'Missing or console-subsystem launcher never publishes a URI handler' (-not $Registry.ContainsKey($UriKey))
+	Copy-Item -LiteralPath $Review -Destination $SourceReview -Force
+	Pack-Release 'gui-review'
 	& $Installer
 	Check 'Fresh full integration leaves startup disabled' ($null -eq $Run)
-	Check 'Direct URI command has an option terminator and a single quoted URI' ($Registry[$UriKey][-1].Values[0].Value.EndsWith(' uri -- "%1"') -and $Registry[$UriKey][-1].Values[0].Value -notmatch 'powershell|cmd\.exe')
-	Check 'Manifest and native platform hooks precede installed code' ($Trace[0] -eq 'manifest' -and $Trace -contains 'script' -and $Trace -contains 'executable')
-	Check 'Exact packaged executable is installed' ((Hash (Join-Path $Prefix 'bin\retype.exe')) -eq (Hash $Binary))
+	$InstalledReview = Join-Path $Prefix 'bin\retype-review.exe'
+	$expectedUri = '"' + $InstalledReview + '" --state-dir "' + $State + '" -- "%1"'
+	Check 'URI directly launches the GUI executable with one quoted operand' ($Registry[$UriKey][-1].Values[0].Value -ceq $expectedUri)
+	Check 'Manifest and platform hooks verify the CLI, Review launcher and shortcut helper' ($Trace[0] -eq 'manifest' -and
+		$Trace -contains 'shortcut.ps1' -and $Trace -contains 'retype.exe' -and $Trace -contains 'retype-review.exe' -and
+		@($Trace | Where-Object { $_ -like '.retype.*.retype-review.exe' }).Count -gt 0)
+	Check 'Exact packaged executables are installed' ((Hash (Join-Path $Prefix 'bin\retype.exe')) -eq (Hash $Binary) -and
+		(Hash $InstalledReview) -eq (Hash $Review))
 	$Shortcut = Join-Path $Programs 'retype.lnk'
 	$shell = New-Object -ComObject Shell.Application
 	try {
@@ -282,7 +299,7 @@ try {
 
 	[IO.File]::WriteAllText($SourceAsset, 'asset C'); Pack-Release 'failure-cases'
 	$previous = Installed-Snapshot
-	foreach ($kind in @('binary', 'asset', 'receipt')) {
+	foreach ($kind in @('binary', 'review', 'asset', 'receipt')) {
 		$script:FailPublication = $kind
 		Refused $kind "Simulated $kind publication failure"
 		Check "$kind failure restores exact previous files, receipt, shortcut and user integration" ((Installed-Snapshot) -ceq $previous)
@@ -352,7 +369,8 @@ try {
 	Refused 'removal' 'Simulated removal publication failure'
 	Check 'Removal failure preserves exact installation and integration' ((Installed-Snapshot) -ceq $previousRemoval)
 	& $Installer
-	Check 'Removal removes executable and owned URI/startup/shortcut only' (-not (Test-Path (Join-Path $Prefix 'bin\retype.exe')) -and -not $Registry.ContainsKey($UriKey) -and $null -eq $Run -and -not (Test-Path $Shortcut))
+	Check 'Removal removes the two executables and owned URI/startup/shortcut only' (-not (Test-Path (Join-Path $Prefix 'bin\retype.exe')) -and
+		-not (Test-Path $InstalledReview) -and -not $Registry.ContainsKey($UriKey) -and $null -eq $Run -and -not (Test-Path $Shortcut))
 	Check 'Removal restores only the known pre-existing plain notification identity' ((Snapshot @($Registry[$IdentityKey])) -ceq (Snapshot $plain))
 	Check 'Even forged share inventory cannot authorize user-data deletion' ([IO.File]::ReadAllText($forgedData) -ceq 'user original, never receipt-authorized for removal')
 	Check 'Configuration, watches, journal and recovery originals remain byte-exact' ([IO.File]::ReadAllText($Config) -ceq 'user configuration, never overwritten' -and
@@ -369,6 +387,7 @@ try {
 		[IO.File]::ReadAllText((Join-Path $State 'watches.toml')) -ceq 'retained user data: watches.toml')
 	$backups = @(Get-ChildItem (Join-Path $Prefix 'share') -Directory -Filter 'retype-backup-*')
 	Check 'Previous executable and integration backups are persistent' (@($backups | Where-Object { Test-Path (Join-Path $_.FullName 'retype.exe') }).Count -gt 0 -and
+		@($backups | Where-Object { Test-Path (Join-Path $_.FullName 'removed-retype-review.exe') }).Count -gt 0 -and
 		@($backups | Where-Object { Test-Path (Join-Path $_.FullName 'integration.json') }).Count -gt 0)
 	@{ Checks = $Checks.Count; Revision = $revision; BinarySha256 = Hash $Binary; Result = 'passed'; Scope = 'Synthetic, not publisher trust or desktop/session qualification';
 		Cleanup = 'Private HKCU child removed after snapshot; files, backups, failed attempts and source snapshots retained' } |

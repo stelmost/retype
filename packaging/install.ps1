@@ -138,7 +138,8 @@ function Assert-RetypeWindowsTrust {
 	}
 
 	function Get-RetypeOwnedPath([string]$Relative) {
-		if ($Relative -notmatch '^(bin/retype\.exe|share/retype/(fidelity\.toml|fixtures/fidelity/[A-Za-z0-9._/-]+|packaging/[A-Za-z0-9._/-]+))$' -or
+		if ((-not $executableSubsystems.Contains($Relative) -and
+			$Relative -notmatch '^share/retype/(fidelity\.toml|fixtures/fidelity/[A-Za-z0-9._/-]+|packaging/[A-Za-z0-9._/-]+)$') -or
 			@($Relative -split '/' | Where-Object { $_ -in @('', '.', '..') -or $_.EndsWith('.') }).Count) {
 			throw "Invalid installed-file inventory entry: $Relative"
 		}
@@ -267,15 +268,28 @@ function Assert-RetypeWindowsTrust {
 		return $arguments
 	}
 
-	function Assert-RetypeExecutable([string]$Path) {
+	function Get-RetypeReviewCommand($Settings) {
+		$arguments = ''
+		if ($Settings.StateDir) {
+			$state = Get-RetypePath $Settings.StateDir
+			# Trailing backslashes must be doubled before the closing Windows argument quote.
+			$state += '\' * ($state.Length - $state.TrimEnd('\').Length)
+			$arguments = ' --state-dir "' + $state + '"'
+		}
+		return '"' + $targetReview + '"' + $arguments + ' -- "%1"'
+	}
+
+	function Assert-RetypeExecutable([string]$Path, [uint16]$Subsystem) {
 		$bytes = [IO.File]::ReadAllBytes($Path)
 		if ($bytes.Length -lt 64 -or [Text.Encoding]::ASCII.GetString($bytes, 0, 2) -ne 'MZ') { throw 'Not a Windows executable.' }
 		$offset = [BitConverter]::ToUInt32($bytes, 60)
-		if ($offset -gt $bytes.Length - 6 -or [BitConverter]::ToUInt32($bytes, $offset) -ne 0x00004550) {
-			throw 'Invalid Windows executable header.'
-		}
+		if ($offset -lt 64 -or $offset -gt $bytes.Length - 94 -or
+			[BitConverter]::ToUInt32($bytes, $offset) -ne 0x00004550 -or
+			[BitConverter]::ToUInt16($bytes, $offset + 20) -lt 70 -or
+			[BitConverter]::ToUInt16($bytes, $offset + 24) -ne 0x020B) { throw 'Invalid Windows executable header.' }
 		$expected = if ($machine -eq 'ARM64') { 0xAA64 } else { 0x8664 }
 		if ([BitConverter]::ToUInt16($bytes, $offset + 4) -ne $expected) { throw 'The executable does not match the native Windows architecture.' }
+		if ([BitConverter]::ToUInt16($bytes, $offset + 92) -ne $Subsystem) { throw "Unexpected Windows executable subsystem: $Path" }
 	}
 
 	function Backup-RetypeFile([string]$Path, [string]$Relative) {
@@ -318,6 +332,9 @@ function Assert-RetypeWindowsTrust {
 	if ($Prefix -eq [IO.Path]::GetPathRoot($Prefix).TrimEnd('\')) { throw 'The install prefix cannot be a drive root.' }
 	$binDir = Join-Path $Prefix 'bin'
 	$targetBinary = Join-Path $binDir 'retype.exe'
+	$targetReview = Join-Path $binDir 'retype-review.exe'
+	# PE subsystems: Windows console (3) and Windows GUI (2).
+	$executableSubsystems = [ordered]@{ 'bin/retype.exe' = 3; 'bin/retype-review.exe' = 2 }
 	$receiptPath = Join-Path $Prefix '.retype-install.json'
 	$machine = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 	if ($machine -notin @('AMD64', 'ARM64')) { throw "Unsupported architecture: $machine" }
@@ -365,7 +382,7 @@ function Assert-RetypeWindowsTrust {
 	}
 	$startAtLogin = $Integration -eq 'user' -and ($Startup -eq 'enable' -or ($Startup -eq 'preserve' -and $receipt -and $receipt.Startup))
 	$startCommand = '"' + $targetBinary + '"' + $arguments + ' daemon start'
-	$uriCommand = '"' + $targetBinary + '"' + $arguments + ' uri -- "%1"'
+	$uriCommand = Get-RetypeReviewCommand $settings
 	$shortcut = Join-Path (Get-RetypePrograms) 'retype.lnk'
 	Assert-RetypePath $shortcut
 	$oldUserPath = Read-RetypeUserPath
@@ -384,7 +401,9 @@ function Assert-RetypeWindowsTrust {
 		# Registry ownership is derived from fixed contracts, never from receipt-supplied registry trees.
 		$oldArguments = Get-RetypeArguments $receipt
 		$oldCommand = '"' + $targetBinary + '"' + $oldArguments
-		Assert-RetypeSnapshot $before.Uri (Get-RetypeUriTree ($oldCommand + ' uri -- "%1"')) 'URI registration'
+		$oldUri = if ($owned.ContainsKey('bin/retype-review.exe')) { Get-RetypeReviewCommand $receipt }
+			else { $oldCommand + ' uri -- "%1"' }
+		Assert-RetypeSnapshot $before.Uri (Get-RetypeUriTree $oldUri) 'URI registration'
 		Assert-RetypeSnapshot $before.Identity (Get-RetypeIdentityTree) 'notification identity'
 		$oldRun = if ($receipt.Startup) { [ordered]@{ Kind = 'String'; Value = $oldCommand + ' daemon start' } } else { $null }
 		Assert-RetypeSnapshot $before.Startup $oldRun 'startup entry'
@@ -401,7 +420,9 @@ function Assert-RetypeWindowsTrust {
 		$hadPlainIdentity = $null -ne $before.Identity
 	}
 	$previousIdentity = if ($hadPlainIdentity) { $plainIdentity } else { $null }
-	if (Get-Process -Name retype -ErrorAction SilentlyContinue) { throw 'retype is running. Stop the daemon before install, update or removal.' }
+	if (Get-Process -Name retype, retype-review -ErrorAction SilentlyContinue) {
+		throw 'retype is running. Close Review and stop the daemon before install, update or removal.'
+	}
 
 	$temp = $null
 	$backup = $null
@@ -486,6 +507,7 @@ function Assert-RetypeWindowsTrust {
 			foreach ($sourceFile in $sourceFiles) {
 				$relative = $sourceFile.FullName.Substring($source.Length + 1).Replace('\', '/')
 				$destination = Get-RetypeOwnedPath $relative
+				if ($Mode -eq 'preview' -and $relative -eq 'bin/retype-review.exe') { continue }
 				$hash = Get-RetypeHash $sourceFile.FullName
 				if (Test-Path -LiteralPath $destination) {
 					if (-not $owned.ContainsKey($relative) -or (Get-RetypeHash $destination) -ne $owned[$relative]) {
@@ -502,11 +524,17 @@ function Assert-RetypeWindowsTrust {
 					Stage = $null; Previous = $null; PreviousHash = $null; Changed = $false
 				}
 			}
-			if ($files.Path -notcontains 'bin/retype.exe') { throw "$Archive does not contain bin/retype.exe." }
-			Assert-RetypeExecutable (Join-Path $source 'bin\retype.exe')
+			foreach ($relative in $executableSubsystems.Keys) {
+				if ($Mode -eq 'preview' -and $relative -eq 'bin/retype-review.exe') { continue }
+				$path = Join-Path $source $relative
+				if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$Archive does not contain $relative." }
+				Assert-RetypeExecutable $path $executableSubsystems[$relative]
+				if ($Mode -eq 'signed') {
+					Assert-RetypeWindowsTrust -Path $path -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
+				}
+			}
 			$sourceShortcut = Join-Path $source 'share\retype\packaging\windows\shortcut.ps1'
 			if ($Mode -eq 'signed') {
-				Assert-RetypeWindowsTrust -Path (Join-Path $source 'bin\retype.exe') -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
 				if (-not (Test-Path -LiteralPath $sourceShortcut -PathType Leaf)) { throw 'The release has no Windows shortcut identity helper.' }
 				Assert-RetypeWindowsTrust -Path $sourceShortcut -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
 				. $sourceShortcut
@@ -528,18 +556,24 @@ function Assert-RetypeWindowsTrust {
 		$before | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath (Join-Path $backup 'integration.json') -Encoding UTF8
 		if ($receipt) { $null = Backup-RetypeFile $receiptPath 'receipt.json' }
 		if ($receipt -and $receipt.Installed -and $receipt.Integration -eq 'user') { $null = Backup-RetypeFile $shortcut 'retype.lnk' }
-		if ($Action -eq 'remove' -and (Test-Path -LiteralPath $targetBinary)) {
+		if ($Action -eq 'remove') {
 			# A mutable inventory never grants permission to purge shared assets or user data.
-			Assert-RetypeExecutable $targetBinary
-			if ((Get-RetypeHash $targetBinary) -ne $owned['bin/retype.exe']) { throw 'Refusing to remove a changed executable.' }
-			foreach ($dataPath in @($settings.StateDir, $settings.Config)) {
-				if ($dataPath -and ($targetBinary -eq $dataPath -or $targetBinary.StartsWith($dataPath.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) {
-					throw 'The executable overlaps configured user data; refusing removal.'
+			foreach ($relative in $executableSubsystems.Keys) {
+				if (-not $owned.ContainsKey($relative)) { continue }
+				$destination = Get-RetypeOwnedPath $relative
+				if (-not (Test-Path -LiteralPath $destination)) { continue }
+				Assert-RetypeExecutable $destination $executableSubsystems[$relative]
+				if ((Get-RetypeHash $destination) -ne $owned[$relative]) { throw "Refusing to remove a changed executable: $relative" }
+				foreach ($dataPath in @($settings.StateDir, $settings.Config)) {
+					if ($dataPath -and ($destination -eq $dataPath -or $destination.StartsWith($dataPath.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))) {
+						throw 'The executable overlaps configured user data; refusing removal.'
+					}
 				}
-			}
-			$files += [pscustomobject]@{
-				Path = 'bin/retype.exe'; Destination = $targetBinary; Hash = $owned['bin/retype.exe']
-				Stage = Join-Path $binDir ".retype.$stageId.exe"; Previous = $null; PreviousHash = $null; Changed = $false
+				$leaf = [IO.Path]::GetFileName($destination)
+				$files += [pscustomobject]@{
+					Path = $relative; Destination = $destination; Hash = $owned[$relative]
+					Stage = Join-Path $binDir ".retype.$stageId.$leaf"; Previous = $null; PreviousHash = $null; Changed = $false
+				}
 			}
 		}
 		foreach ($file in $files) {
@@ -547,7 +581,8 @@ function Assert-RetypeWindowsTrust {
 			if (Test-Path -LiteralPath $file.Destination) {
 				$file.PreviousHash = Get-RetypeHash $file.Destination
 				if ($file.PreviousHash -ne $owned[$file.Path]) { throw "The destination changed before backup: $($file.Destination)" }
-				$relative = if ($file.Path -eq 'bin/retype.exe') { 'retype.exe' } else { 'share/' + $file.Path.Substring('share/retype/'.Length) }
+				$relative = if ($executableSubsystems.Contains($file.Path)) { [IO.Path]::GetFileName($file.Destination) }
+					else { 'share/' + $file.Path.Substring('share/retype/'.Length) }
 				$file.Previous = Backup-RetypeFile $file.Destination $relative
 			}
 			if ($Action -eq 'install') {
@@ -558,7 +593,9 @@ function Assert-RetypeWindowsTrust {
 		if ($Action -eq 'install') {
 			$stagedBinary = ($files | Where-Object Path -eq 'bin/retype.exe').Stage
 			if ($Mode -eq 'signed') {
-				Assert-RetypeWindowsTrust -Path $stagedBinary -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
+				foreach ($file in $files | Where-Object { $executableSubsystems.Contains($_.Path) }) {
+					Assert-RetypeWindowsTrust -Path $file.Stage -PublisherCertificateSha256 $env:RETYPE_PUBLISHER_CERTIFICATE_SHA256
+				}
 			}
 			$output = & $stagedBinary --version 2>&1
 			if ($LASTEXITCODE -ne 0) { throw "The staged binary does not run; installation unchanged: $output" }
@@ -572,7 +609,10 @@ function Assert-RetypeWindowsTrust {
 			if ($Action -eq 'install' -and (Get-RetypeHash $file.Stage) -ne $file.Hash) { throw 'A staged file changed before publication.' }
 			$file.Changed = $true
 			if ($Action -eq 'install') { Move-Item -LiteralPath $file.Stage -Destination $file.Destination -Force }
-			else { Move-Item -LiteralPath $file.Destination -Destination (Join-Path $backup 'removed-retype.exe') }
+			else {
+				$removed = 'removed-' + [IO.Path]::GetFileName($file.Destination)
+				Move-Item -LiteralPath $file.Destination -Destination (Join-Path $backup $removed)
+			}
 			$owned[$file.Path] = $file.Hash
 		}
 		if ($Integration -eq 'user' -or ($receipt -and $receipt.Installed -and $receipt.Integration -eq 'user')) {

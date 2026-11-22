@@ -6,8 +6,7 @@ external tool binaries. Manual workflow dispatch produces non-publishing preview
 
 ## Asset layout
 
-Every archive is named `retype-<tag>-<target>.tar.gz` and contains `bin/retype`
-(`retype.exe` on Windows) and these shared assets:
+Every archive is named `retype-<tag>-<target>.tar.gz` and contains `bin/retype` (`retype.exe` on Windows) and these shared assets. Windows release archives also carry `bin/retype-review.exe` for signed per-user URI registration.
 
 ```
 share/retype/fidelity.toml

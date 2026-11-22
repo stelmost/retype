@@ -10,10 +10,15 @@ repository.workspace = true
 
 [features]
 test-checkpoints = ['retype-core/test-checkpoints']
+windows-review = []
 
 [[test]]
 name = 'daemon_recovery'
 required-features = ['test-checkpoints']
+
+[[test]]
+name = 'installer_windows'
+required-features = ['windows-review']
 
 [lib]
 name = "retype_cli"
@@ -22,6 +27,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "retype"
 path = "src/main.rs"
+
+[[bin]]
+name = "retype-review"
+path = "src/bin/retype-review.rs"
+required-features = ['windows-review']
 
 [dependencies]
 clap.workspace = true

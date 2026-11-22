@@ -302,12 +302,18 @@ def main():
                 assert (prefix / 'share/retype/fidelity.toml').read_bytes() == packaged_fidelity, \
                     'Installed fidelity manifest differs from the exact archive'
                 manifest = tomllib.loads(packaged_fidelity.decode('utf-8'))
+                if windows:
+                    review = package.extractfile(f'{name}/bin/retype-review.exe')
+                    assert review, 'Exact Windows archive lacks the Review launcher'
+                    launcher = review.read()
             if windows:
-                executable = binary.read_bytes()
-                pe = int.from_bytes(executable[60:64], 'little')
-                machine = int.from_bytes(executable[pe + 4:pe + 6], 'little')
-                check('native executable architecture', executable[pe:pe + 4] == b'PE\0\0' and
-                      machine == (0xAA64 if architecture == 'aarch64' else 0x8664))
+                expected_machine = 0xAA64 if architecture == 'aarch64' else 0x8664
+                for label, executable, subsystem in (('console CLI', binary.read_bytes(), 3), ('GUI Review', launcher, 2)):
+                    pe = int.from_bytes(executable[60:64], 'little')
+                    check(f'native {label} architecture and subsystem', executable[pe:pe + 4] == b'PE\0\0' and
+                          int.from_bytes(executable[pe + 4:pe + 6], 'little') == expected_machine and
+                          int.from_bytes(executable[pe + 92:pe + 94], 'little') == subsystem)
+                check('preview does not install the Review launcher', not binary.with_name('retype-review.exe').exists())
                 installed_path = json.loads(user_path('user-path-installed'))
                 check('preview user PATH token',
                       installed_path != without_installer_path(installed_path, None, binary.parent))

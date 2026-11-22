@@ -843,7 +843,8 @@ fn installed_windows_handler() -> bool {
 	let Ok(executable) = std::env::current_exe() else {
 		return false;
 	};
-	let Some(executable) = executable.to_str() else {
+	let launcher = executable.with_file_name("retype-review.exe");
+	let Some(launcher) = launcher.to_str().filter(|_| launcher.is_file()) else {
 		return false;
 	};
 	let mut buffer = vec![0u16; 32768];
@@ -862,15 +863,23 @@ fn installed_windows_handler() -> bool {
 		return false;
 	}
 	let length = buffer.iter().position(|word| *word == 0).unwrap_or(buffer.len());
-	String::from_utf16(&buffer[..length]).is_ok_and(|handler| is_windows_handler(&handler, executable))
+	String::from_utf16(&buffer[..length]).is_ok_and(|handler| is_windows_handler(&handler, launcher))
 }
 
 #[cfg(any(windows, test))]
-fn is_windows_handler(handler: &str, executable: &str) -> bool {
-	handler
-		.strip_prefix('"')
-		.and_then(|command| command.split_once('"'))
-		.is_some_and(|(path, args)| path.eq_ignore_ascii_case(executable) && args.ends_with(r#" uri -- "%1""#))
+fn is_windows_handler(handler: &str, launcher: &str) -> bool {
+	let Some((path, args)) = handler.strip_prefix('"').and_then(|command| command.split_once('"')) else {
+		return false;
+	};
+	let Some(settings) = args.strip_suffix(r#" -- "%1""#) else {
+		return false;
+	};
+	path.eq_ignore_ascii_case(launcher)
+		&& (settings.is_empty()
+			|| settings
+				.strip_prefix(r#" --state-dir ""#)
+				.and_then(|value| value.strip_suffix('"'))
+				.is_some_and(|value| !value.is_empty() && !value.contains(['"', '%'])))
 }
 
 /// Use protocol activation only with our installed identity. The fallback toast is plain.
@@ -1311,10 +1320,19 @@ mod tests {
 
 	#[test]
 	fn protocol_activation_needs_our_installed_single_operand_handler() {
-		let executable = r"C:\Retype Test\bin\retype.exe";
-		let handler = format!(r#""{executable}" --state-dir "C:\Retype State" uri -- "%1""#);
-		assert!(is_windows_handler(&handler, executable));
-		assert!(!is_windows_handler(&handler, r"C:\Other\retype.exe"));
-		assert!(!is_windows_handler(&handler.replace(" -- ", " "), executable));
+		let launcher = r"C:\Retype Test\bin\retype-review.exe";
+		assert!(is_windows_handler(&format!(r#""{launcher}" -- "%1""#), launcher));
+		let handler = format!(r#""{launcher}" --state-dir "C:\Retype State" -- "%1""#);
+		assert!(is_windows_handler(&handler, launcher));
+		assert!(!is_windows_handler(&handler, r"C:\Other\retype-review.exe"));
+		assert!(!is_windows_handler(&handler.replace(" -- ", " "), launcher));
+		assert!(!is_windows_handler(
+			&handler.replace("C:\\Retype State", "%1"),
+			launcher
+		));
+		let legacy = handler
+			.replace("retype-review.exe", "retype.exe")
+			.replace(" -- ", " uri -- ");
+		assert!(!is_windows_handler(&legacy, launcher));
 	}
 }

@@ -163,13 +163,13 @@ jobs:
           bundle_version=${bundle_version%%-*}
           bash packaging/macos/build.sh target/release/retype "$RETYPE_TEST_REPORT_DIR/preview/retype.app" "$bundle_version" '${{ matrix.target }}'
           cmp target/release/retype "$RETYPE_TEST_REPORT_DIR/preview/retype.app/Contents/Resources/retype"
-      - name: Build exact Windows preview executable and earn its evidence
+      - name: Build Windows CLI and Review launcher and earn fidelity evidence
         if: runner.os == 'Windows'
         shell: pwsh
         timeout-minutes: 20
         run: |
           ./tests/support/windows-user.ps1 -Architecture '${{ matrix.architecture }}' -Command @'
-          cargo build --release --locked -p retype-cli --bin retype
+          cargo build --release --locked -p retype-cli --features windows-review --bins
           & target/release/retype.exe fidelity --pair png:jpg --pair png:webp --state-dir "$env:TEMP/retype-fidelity" --write (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.toml') --fixtures fixtures/fidelity *> (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.log')
           '@
       - name: Package and smoke-test exact Windows unsigned preview archive
@@ -180,7 +180,7 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME } else { $version = 'v0.1.0-dev-' + $env:GITHUB_SHA.Substring(0, 7) }
           $name = 'retype-' + $version + '-${{ matrix.target }}'
           New-Item -ItemType Directory -Path "dist/$name/bin", "dist/$name/share/retype/fixtures" | Out-Null
-          Copy-Item target/release/retype.exe "dist/$name/bin/"
+          Copy-Item -LiteralPath 'target/release/retype.exe', 'target/release/retype-review.exe' -Destination "dist/$name/bin/"
           Copy-Item (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.toml') "dist/$name/share/retype/"
           Copy-Item fixtures/fidelity "dist/$name/share/retype/fixtures/" -Recurse
           Copy-Item packaging "dist/$name/share/retype/" -Recurse

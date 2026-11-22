@@ -349,13 +349,14 @@ try {
 
 	if (-not $Check) {
 		$null = Run-Step -Name 'format' -Seconds 60 -Executable 'cargo' -Arguments @('fmt', '--all', '--', '--check')
+		$workspaceFlags = @('--workspace', '--locked', '--features', 'retype-cli/windows-review')
 		$null = Run-Step -Name 'clippy' -Seconds $Limit -Executable 'cargo' `
-			-Arguments @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
+			-Arguments (@('clippy', '--all-targets') + $workspaceFlags + @('--', '-D', 'warnings'))
 		Test-InstallerSyntax
 		$build = Run-Step -Name 'build' -Seconds $Limit -Executable 'cargo' `
-			-Arguments @('test', '--workspace', '--locked', '--no-run')
+			-Arguments (@('test', '--no-run') + $workspaceFlags)
 		if ($build.Code -eq 0 -and -not $build.TimedOut) {
-			$nextest = @('nextest', 'run', '--workspace', '--locked', '--config-file', 'tests/nextest.toml',
+			$nextest = @('nextest', 'run') + $workspaceFlags + @('--config-file', 'tests/nextest.toml',
 				'--profile', 'platform', '--user-config-file', 'none', '--ignore-default-filter', '--run-ignored', 'all',
 				'--status-level', 'pass', '--color', 'never', '--success-output', 'immediate',
 				'--failure-output', 'immediate', '--no-tests', 'fail')

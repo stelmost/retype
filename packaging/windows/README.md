@@ -10,13 +10,13 @@ Signed delivery is the default. It requires an independently trusted installer, 
 
 - `SHA256SUMS` and its detached `SHA256SUMS.minisig` signature
 - The exact native archive named by that authenticated manifest
-- Valid, approved-leaf-certificate-pinned, timestamped Authenticode on the CLI and the executed Windows shortcut helper
+- Valid, approved-leaf-certificate-pinned, timestamped Authenticode on `bin/retype.exe`, `bin/retype-review.exe` and the Windows shortcut helper
 
 The embedded verifiers authenticate the manifest/archive before extraction and validate extracted code before execution. They do not import certificates, change stores, sign files, install tools or infer a preview fallback. An unverified script piped into `iex` is not an independently authenticated bootstrap; verify the installer/source before executing signed delivery.
 
 Signed installation creates only per-user integration:
 
-- `HKCU\Software\Classes\retype`: A direct executable command ending in `uri -- "%1"`, never a shell command
+- `HKCU\Software\Classes\retype`: A direct command to the GUI-subsystem `retype-review.exe` ending in `-- "%1"`, never a shell command. Opening Review does not create a console; `retype.exe` remains the terminal CLI.
 - `HKCU\Software\Classes\AppUserModelId\com.lapilliworks.retype.cli`: The notification identity and display name
 - The user's `Programs\retype.lnk`: A native shell link with `System.AppUserModel.ID = com.lapilliworks.retype.cli`, targeting existing `daemon start`
 - The install `bin` directory in the user PATH, unless already present
@@ -27,7 +27,7 @@ A supported toast can offer **Review** for one job using `retype://job/<full-job
 
 A fresh install leaves startup disabled. Updates preserve the previous opt-in by default. `RETYPE_STARTUP=enable` adds only `com.lapilliworks.retype.cli` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, invoking the exact installed CLI's existing `daemon start`. `RETYPE_STARTUP=disable` removes only that owned value. Both changes apply at the next sign-in, not immediately. Other startup entries are retained.
 
-An explicitly selected `RETYPE_STATE_DIR` or `RETYPE_CONFIG` is pinned into the shortcut/URI/startup arguments and preserved on update unless explicitly changed. A selected integration configuration must exist. Paths that overlap incoming installed files are refused rather than replaced with defaults or overwritten.
+An explicitly selected `RETYPE_STATE_DIR` or `RETYPE_CONFIG` is pinned into the shortcut/startup arguments and preserved on update unless explicitly changed. The Review launcher only needs the state directory. A selected integration configuration must exist. Paths that overlap incoming installed files are refused rather than replaced with defaults or overwritten.
 
 ### Preview
 
@@ -39,7 +39,7 @@ Updates replace files individually on the destination filesystem. Unowned or mod
 
 Every update/removal retains a unique `share\retype-backup-<id>` directory containing prior executable bytes, prior touched shared files, the prior receipt, the owned shortcut and the integration snapshot when present. Rollback uses these verified copies and refuses unexpected file replacements. A failure or interrupted attempt does not authorize cleanup of recovery data; inspect the retained backup before retrying or manually repairing installation files.
 
-Set `RETYPE_ACTION=remove` with the same prefix and run the trusted installer. Removal does not download or execute an installed helper. It validates fixed ownership contracts, moves only unchanged `bin\retype.exe` to backup, removes the owned URI/shortcut/startup integration, restores only the known pre-existing plain toast identity when applicable, and removes only an installer-added `bin` PATH token. A mutable receipt never supplies an arbitrary deletion path or registry tree.
+Set `RETYPE_ACTION=remove` with the same prefix and run the trusted installer. Removal does not download or execute an installed helper. It validates fixed ownership contracts, moves only unchanged, owned `bin\retype.exe` and `bin\retype-review.exe` to backup, removes the owned URI/shortcut/startup integration, restores only the known pre-existing plain toast identity when applicable, and removes only an installer-added `bin` PATH token. A mutable receipt never supplies an arbitrary deletion path or registry tree.
 
 Removal deliberately retains these in place:
 
@@ -53,10 +53,11 @@ This is safe application removal, not complete disk cleanup. A legacy installati
 
 ## Qualification fixture
 
-Run on native Windows with a verified ordinary-user token and an exact native CLI:
+Run on native Windows with a verified ordinary-user token and both binaries from the same build:
 
 ```powershell
-.\tests\install.ps1 -Binary 'C:\owned\retype.exe' -Report 'C:\owned\new-installer-report'
+cargo build --release --locked -p retype-cli --features windows-review --bins
+.\tests\install.ps1 -Binary '.\target\release\retype.exe' -Report 'C:\owned\new-installer-report'
 ```
 
 The fixture records revision/status, exact source snapshots, executable hash, OS/architecture/token scope, checks, failures and persistent backups. It uses mocked publisher verification and mocked OS-recognized URI/AppID/Run/PATH operations, a private filesystem/shortcut, and only a fresh `HKCU\Software\retype-installer-tests\<id>` key for native registry round-trip checks. That child key is snapshotted before removal; files, source snapshots and failed attempts remain in the report. It does not register a real URI, create a real Start-menu shortcut, start a daemon or alter the user's real PATH/startup definitions.
