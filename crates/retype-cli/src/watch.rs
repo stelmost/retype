@@ -296,7 +296,12 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 				if !allow_spawn {
 					return Err(error);
 				}
-				crate::daemon::lifecycle::permit_restart(state_dir)?;
+				if crate::daemon::lifecycle::permit_restart(state_dir)?
+					== crate::daemon::lifecycle::RestartPermission::WaitForOwner
+				{
+					std::thread::sleep(Duration::from_millis(100));
+					continue;
+				}
 				eprintln!(
 					"retype: daemon connection lost; reconnecting within the persisted restart budget; checking job state"
 				);

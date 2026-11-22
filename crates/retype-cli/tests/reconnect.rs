@@ -59,7 +59,13 @@ impl Fixture {
 	fn stopped(&mut self) {
 		let deadline = Instant::now() + Duration::from_secs(8);
 		while self.follower.try_wait().unwrap().is_none() {
-			assert!(Instant::now() < deadline, "follower did not stop");
+			assert!(
+				Instant::now() < deadline,
+				"follower did not stop: {}\n{}\n{}",
+				fs::read_to_string(self.state.join("lifecycle.json")).unwrap(),
+				fs::read_to_string(self.dir.path().join("errors")).unwrap(),
+				fs::read_to_string(self.dir.path().join("events")).unwrap(),
+			);
 			std::thread::sleep(Duration::from_millis(50));
 		}
 	}

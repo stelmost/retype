@@ -89,21 +89,33 @@ impl Lifecycle {
 	}
 }
 
-pub fn permit_restart(state: &Path) -> Result<()> {
-	let _lock = super::Lock::acquire(&state.join("restart.lock"), state)
-		.map_err(|error| Diagnostic::global(Code::IpcUnavailable, error.to_string()))?;
-	let mut lifecycle = read(state)?;
-	if matches!(lifecycle.state.as_str(), "clean" | "stopping") {
-		return lifecycle.permit();
-	}
-	let _daemon = match super::Lock::acquire(&state.join("lock"), state) {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RestartPermission {
+	WaitForOwner,
+	Allowed,
+}
+
+pub(crate) fn permit_restart(state: &Path) -> Result<RestartPermission> {
+	let _lock = match super::Lock::acquire(&state.join("restart.lock"), state) {
 		Ok(lock) => lock,
-		Err(crate::error::Error::AlreadyRunning(_)) => return Ok(()),
+		Err(crate::error::Error::AlreadyRunning(_)) => return Ok(RestartPermission::WaitForOwner),
 		Err(error) => return Err(Diagnostic::global(Code::IpcUnavailable, error.to_string()).into()),
 	};
+	let _daemon = match super::Lock::acquire(&state.join("lock"), state) {
+		Ok(lock) => lock,
+		Err(crate::error::Error::AlreadyRunning(_)) => {
+			let mut lifecycle = read(state)?;
+			if matches!(lifecycle.state.as_str(), "clean" | "stopping") {
+				lifecycle.permit()?;
+			}
+			return Ok(RestartPermission::WaitForOwner);
+		}
+		Err(error) => return Err(Diagnostic::global(Code::IpcUnavailable, error.to_string()).into()),
+	};
+	let mut lifecycle = read(state)?;
 	let result = lifecycle.permit();
 	write(state, &lifecycle)?;
-	result
+	result.map(|()| RestartPermission::Allowed)
 }
 
 pub struct Guard<'a>(pub &'a Path);
@@ -118,6 +130,20 @@ impl Drop for Guard<'_> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_live_lock_never_allows_an_uncounted_restart() {
+		let directory = tempfile::tempdir().unwrap();
+		let state = directory.path();
+		begin(state).unwrap();
+		let owner = super::super::Lock::acquire(&state.join("lock"), state).unwrap();
+		assert_eq!(permit_restart(state).unwrap(), RestartPermission::WaitForOwner);
+		assert_eq!(read(state).unwrap().unknown, 0);
+		drop(owner);
+		assert_eq!(permit_restart(state).unwrap(), RestartPermission::Allowed);
+		assert_eq!(read(state).unwrap().unknown, 1);
+	}
+
 	#[test]
 	fn restart_budgets_count_boots_once_and_known_causes_separately() {
 		let mut lifecycle = Lifecycle {
