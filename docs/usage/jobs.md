@@ -16,7 +16,7 @@ A conversion typed at the terminal is one job and does not queue behind a folder
 
 `jobs get` answers with the whole record, as JSON: the outputs, their sizes, their tier, their errors. It is what a bug report or a script wants, so it is not rendered into columns. The tier is defined in [Fidelity](../advanced/fidelity.md).
 
-Ids accept any unique prefix. A prefix that matches more than one job is refused, with the candidates listed, and [Command line](../reference/cli.md) has every subcommand and flag.
+Direct CLI job commands accept a unique ID prefix. A prefix that matches more than one job is refused, with the candidates listed. A Review link requires the full ID. See [Command line](../reference/cli.md).
 
 ## Logs
 
@@ -65,7 +65,7 @@ The settings are host-level in configuration; a folder cannot set them, so a rep
 
 Unexpired records are not automatically evicted. By default, a job admitted below the goal keeps its backup even if it crosses the goal. Subsequent work waits visibly with reason `storage` until capacity becomes available. `stop-before` holds a job that would exceed the goal. A deliberate `on_overflow = 'skip'` keeps the original visible and omits the new record when it cannot fit; `ask` and legacy `evict` never authorize that downgrade. Interactive early-eviction prompts are not implemented. An error creating an input snapshot or undo record stops the job before conversion and is reported. A recognized storage-exhaustion error or a failed output recovery checkpoint stops the remaining outputs; completed outputs are kept. If the final state cannot be journalled, live status says it is not durable. External tools do not always provide a machine-readable cause, so an encoder's disk-full failure may be reported as a general tool failure.
 
-The Linux notification's **Review** button opens a dialog without changing any files. It offers **Undo** only when all affected files can be reviewed and have usable recovery. [Watching a folder](watch.md) describes notification batching.
+A notification's **Review** action opens a native dialog without changing job data. Linux can review a batch; signed Windows and macOS installations review one job per link. **Close** is the default. Only an explicit **Undo** in that dialog can authorize restoration, and only for the same eligible recovery and files shown there. [Watching a folder](watch.md#what-you-are-told) describes how Review becomes available.
 
 ## Recovery operations and protected reservations
 

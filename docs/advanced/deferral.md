@@ -107,7 +107,7 @@ A parked `needs-attention` job and a repaired job say the same four things, so t
 - `corrected`, the intent that would run, when one exists
 - What could not be carried, in the tool's own words, with the span of the token
 
-A repaired job adds what it dropped and uses the same notification as an ordinary job. On Linux, **Review** can offer **Undo** when the full affected scope is available.
+A repaired job adds what it dropped and uses the same notification as an ordinary job. [Review](../usage/watch.md#what-you-are-told) can offer **Undo** when the full affected scope is available, but a notification link cannot resolve or cancel a parked job.
 
 ## 7. The timer
 
@@ -156,6 +156,4 @@ Jobs parked in one daemon tick share a batch and are answered together: one noti
 
 ## 11. Not yet available
 
-- Notification buttons on Windows and the signed notifier bundle. Linux actions, the macOS plain notification, the Windows toast and the log fallback are built
-- `retype://job/<id>` actions beyond the CLI's `undo`, `cancel` and `resolve`
-- The editor's view of a parked job
+The editor's view of a parked job is not yet available.

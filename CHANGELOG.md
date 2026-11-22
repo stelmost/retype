@@ -19,6 +19,7 @@ All notable changes to retype are recorded here. The format follows
 - `retype recovery` lists protected reservations and operation results; `--cleanup` releases only recovery proven redundant against the unchanged original and publication ledger.
 - Restart budgets are persisted per daemon boot and cause, shared across followers, and respect explicit stop intent. Verified login queries gate automatic watching and queued work; unavailable session information is reported as inactive.
 - Debian x86-64 and ARM64 qualification run independently, build their own release executable/evidence and validate each exact archive through the real installer before upload.
+- Desktop `retype://job/<full-job-id>` links request Review, not Undo. Linux retains batch Review; signed Windows and macOS installations can offer single-job notification Review with a plain notification fallback. Only explicit local Undo in the Review dialog can authorize restoration.
 
 ### Fixed
 

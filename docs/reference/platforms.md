@@ -127,13 +127,13 @@ The distribution manifest has its own Ed25519 key, kept offline and separate fro
 
 Capability per platform:
 
-| Platform | Actions | Owner |
+| Platform | Review | Integration |
 |---|---|---|
-| Linux | libnotify actions | Daemon |
-| Windows | Toast without buttons now; protocol activation and the signed notifier later | Daemon, with an AppUserModelID registered under the user's hive |
-| macOS | User Notifications with categories; `osascript` plain fallback now | Notifier bundle |
+| Linux | Batch Review with notification actions and Zenity | Daemon and per-user desktop entry |
+| Windows | One job per Review action on a supported toast from the signed installation | Per-user AppUserModelID and protocol handler |
+| macOS | One job per Review action in User Notifications from the signed installation | Notifier app and LaunchServices registration |
 
-The daemon owns `retype://` and OS notifications. The GUI does not register either; it is a frontend to the daemon. When the daemon is not running, the scheme handler performs undo in-process where possible, and otherwise reports that the daemon is unavailable.
+Windows and macOS native Review use one `retype://job/<full-job-id>` link per actionable notification. The full ID selects the job; it does not authorize anything. The installed handler may request a native dialog, never consent or daemon startup. When actions are unavailable, notifications are plain if the session can show them, otherwise the daemon logs the result. See [Saying what happened](watch.md#11-saying-what-happened).
 
 ## 8. Out of scope
 

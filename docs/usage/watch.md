@@ -103,7 +103,7 @@ Renames are collected before anything runs: four hundred milliseconds of arrival
 
 A rename chain inside one window collapses to a single job, `a.heic` to `a.jpg` to `a.webp` being one conversion from the first name to the last. Converting the middle one would re-encode twice and produce a file nobody asked for.
 
-One batch produces one notification, when its last job settles.
+Notifications report a batch after its last job settles.
 
 ## What you are told
 
@@ -113,9 +113,9 @@ retype daemon status
 
 That reports whether the daemon is running, each registered watcher's state, and its job and event counters. A `degraded` watcher has reported lost events; rescanning may not recover every rename. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused. The foreground follower reports watch states and scoped jobs; it cannot recover unobserved filesystem events. With no verified interactive login, automatic watching is inactive. Existing work may finish. While the daemon remains running, a graphical logout pauses queued automatic work until graphical login returns; terminal-only logout may leave accepted automatic work eligible under a supervisor. If logout stops the daemon, jobs still recorded as queued or running are reported as `E_JOB_INTERRUPTED` on restart and are not automatically replayed. Review their original inputs and existing outputs before explicitly resuming or resubmitting; queued jobs without a retained recovery copy require safe resubmission. Explicit CLI conversions and recovery remain available. Debug test binaries can use controlled session fixtures; those tests do not establish real-login behavior.
 
-Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. On Linux, **Review** can open a native dialog. It defaults to **Close** and offers **Undo** only when it can show every original and output that the undo would affect.
+Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. On Linux, notification actions and optional Zenity can open **Review** for the batch. On signed Windows and macOS installations, a native **Review** action opens one job via its full-ID link.
 
-Review needs notification actions and optional Zenity. Without those, or on Windows and macOS, notifications are plain. Where there is no notifier, the daemon logs the result. A machine with nowhere to show a notification still converts.
+Review needs an ordinary, verified graphical login. It defaults to **Close** and changes nothing unless you explicitly choose **Undo** after seeing every affected original and output. If Review is unavailable, Retype can still show a plain notification or log the result. A machine with nowhere to show a notification still converts.
 
 ## Stopping
 

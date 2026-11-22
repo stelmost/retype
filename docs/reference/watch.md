@@ -127,22 +127,16 @@ The signal handler counts and nothing else, because that is all a handler may sa
 
 ## 11. Saying what happened
 
-The daemon notifies once per batch, when its last job settles, and the notification says what the batch produced rather than what it tried to, `docs/reference/config.md` §17.
+Notifications report what a batch produced after it settles, rather than what it tried to do. See [Notifications](config.md#17-notifications).
 
-Capability is a property of the platform, in three tiers:
-
-| Tier | How | Where |
+| Where | Review | Plain fallback |
 |---|---|---|
-| Review | `notify-send --wait --action`, then Zenity | Linux, with notification actions, a graphical session and optional `zenity` on the daemon's `PATH` |
-| Plain | `notify-send` | Linux, with a session bus |
-| Plain, macOS | the installed notifier, or `osascript` in source builds | macOS |
-| Plain, Windows | a toast through `powershell.exe` | Windows, with the AppUserModelID the script registers under the user's own hive |
-| Log | a line on the daemon's own stderr | no session, or no notifier |
+| Linux | One batch dialog via `notify-send` actions and optional Zenity in a Wayland session | `notify-send` |
+| Windows, signed installation | Native toast **Review** with one full job ID link | Plain toast |
+| macOS, signed installation | Native notification **Review** with one full job ID link | Plain notification |
 
-The tier is decided once at startup, because the session is either there or it is not. A daemon with no notifier still converts: the tier is about being told, never about the work.
+Review requires a verified ordinary-user graphical session. Without actions, you still get a plain notification if available, or a daemon log entry. This does not change the work itself.
 
-**Review** opens a native dialog without changing any files. **Close** is the default. The dialog repeats the batch summary and offers **Undo** only when it can show every affected original and output path and the completed conversions have eligible retained recovery records. Failed jobs with no completed output are reported but are not undone. Undo for multiple conversions shows the count. A failed conversion on its own, unavailable or unfinished recovery, and scopes too large to show get only **Close**. The dialog times out after about a minute.
+Linux Review retains the batch summary and shows the count if Undo would cover multiple conversions. A Windows or macOS Review action uses `retype://job/<full-job-id>` and selects only that job. Failed jobs with no completed output may be reported but are not undone. If recovery is unavailable, unfinished, or too large to display in full, Undo is not offered.
 
-Review checks recovery records and file metadata, not contents. After explicit approval, the daemon refuses changed records and runs the usual checked restoration, which removes only matching outputs. Review does not use a URI handler.
-
-A Linux notification session without Zenity or a graphical display still gets plain notifications. Windows and macOS notifications remain plain. The Windows toast registers `com.lapilliworks.retype.cli` under `HKCU\Software\Classes\AppUserModelId` and falls back to PowerShell's identifier if needed.
+Opening Review does not change the original, outputs or recovery. **Close** is the default. Closing the window, Escape, timeout or a helper error does not consent to anything. Undo requires an explicit local **Undo** choice after every affected original and output is shown. Retype rechecks that exact snapshot under its existing locks and uses checked restoration to remove only unchanged, job-owned outputs.

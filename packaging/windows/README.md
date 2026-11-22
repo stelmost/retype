@@ -17,11 +17,11 @@ The embedded verifiers authenticate the manifest/archive before extraction and v
 Signed installation creates only per-user integration:
 
 - `HKCU\Software\Classes\retype`: A direct executable command ending in `uri -- "%1"`, never a shell command
-- `HKCU\Software\Classes\AppUserModelId\com.lapilliworks.retype.cli`: The existing plain-toast identity and display name
+- `HKCU\Software\Classes\AppUserModelId\com.lapilliworks.retype.cli`: The notification identity and display name
 - The user's `Programs\retype.lnk`: A native shell link with `System.AppUserModel.ID = com.lapilliworks.retype.cli`, targeting existing `daemon start`
 - The install `bin` directory in the user PATH, unless already present
 
-The URI handler retains the existing CLI undo/cancel/resolve contract. Notifications remain plain toasts; action buttons and a GUI are not required. The installer neither launches the daemon nor installs converters.
+A supported toast can offer **Review** for one job using `retype://job/<full-job-id>`. The handler cannot take Undo, cancel or resolve from a URL. An ordinary, verified graphical login is required for the Review dialog, which defaults to **Close**. Plain toasts remain available without Review. The installer neither launches the daemon nor installs converters.
 
 ### Startup
 
@@ -61,4 +61,4 @@ Run on native Windows with a verified ordinary-user token and an exact native CL
 
 The fixture records revision/status, exact source snapshots, executable hash, OS/architecture/token scope, checks, failures and persistent backups. It uses mocked publisher verification and mocked OS-recognized URI/AppID/Run/PATH operations, a private filesystem/shortcut, and only a fresh `HKCU\Software\retype-installer-tests\<id>` key for native registry round-trip checks. That child key is snapshotted before removal; files, source snapshots and failed attempts remain in the report. It does not register a real URI, create a real Start-menu shortcut, start a daemon or alter the user's real PATH/startup definitions.
 
-Synthetic checks do not prove Authenticode/minisign publisher positives, actual OS URI activation, banner/Focus Assist, authenticated unlock, sign-out/sign-in or normal-reboot persistence. Those require independent signing inputs and named-action approval on the supported native profile. Missing tools, skipped checks or an unsigned preview cannot turn those gates into a release pass.
+Synthetic checks do not prove Authenticode/minisign publisher positives, actual OS URI activation or native Review, banner/Focus Assist, authenticated unlock, sign-out/sign-in or normal-reboot persistence. Those require independent signing inputs and named-action approval on the supported native profile. See [Native notification Review](../../docs/dev/testing.md#native-notification-review). Missing tools, skipped checks or an unsigned preview cannot turn those gates into a release pass.

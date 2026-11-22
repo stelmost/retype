@@ -28,9 +28,11 @@ retype <command> [arguments] [flags]
 | `version` | The build and every schema identifier it reads |
 | `completions <shell>` | A completion script for bash, zsh, fish, elvish or PowerShell |
 
-Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
+Global CLI flags: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
 
-`retype uri <retype://job/<id>[?action=undo|cancel|resolve]>` is the desktop scheme handler. It is hidden from help. The default action is `undo`. The scheme, `job` and `action` are read in either case. Linux notification Review does not call this handler.
+The hidden `retype uri` desktop handler uses `retype://job/<full-job-id>` to select one job for **Review**. Links require the full ID, not a prefix or wildcard. A link cannot supply commands, paths, flags or consent. Mutating actions such as `undo`, `cancel` and `resolve` in a URL are refused, and `--json` cannot drive Review. Use the direct CLI commands for scripted actions.
+
+A browser can ask the OS to open a registered link. That only requests a Review dialog in a verified ordinary-user graphical session. The dialog defaults to **Close**. Only an explicit local **Undo** choice can authorize a checked restore of the same eligible snapshot shown in the dialog.
 
 The CLI does not install, update or verify external tools. A CLI user acquires them with the platform's package manager or manually, and the CLI uses the result on `PATH`, an absolute path in configuration, or a managed set the GUI installed, `docs/advanced/converters.md` §2. `retype doctor` reports what the machine provides.
 

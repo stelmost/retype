@@ -61,11 +61,11 @@ Compilation has its own deadline before the shared execution budget starts. Each
 
 ## Standalone checks and diagnostics
 
-- `tests/install.sh`: Local Unix installer/update/rollback checks; Linux desktop/URI integration, native GIO launch from a custom prefix, symlinked MIME preferences, preserved service state and removal/rollback
-- `tests/installed.py <archive> --preview --report <dir>`: Linux exact preview archive, all 17 desktop/URI/service/data checks; Python 3.12+, exact executable/manifest bytes and selected packaged claims
-- `tests/installed.py <archive> --preview-cli-only --allow-user-integration --report <dir>`: Windows unsigned CLI/data/PATH smoke on an explicitly approved disposable profile; owned PATH cleanup, not signed/desktop qualification
-- macOS `tests/installed.py --preview` also requires `--allow-user-integration` on an explicitly authorized real-user profile; never grant that consent automatically in hosted CI
-- `tests/test_installed.py`: Synthetic assertion regression; matching builds earn evidence, changed builds report unverified, and self-consistent wrong manifest claims fail
+- `tests/install.sh`: Local Unix installer/update/rollback checks; Linux default URI association, native GIO argument delivery to a fixture binary under a custom prefix, symlinked MIME preferences, and preservation and removal of owned service state
+- `tests/installed.py <archive> --preview --report <dir>`: Linux exact preview archive; Python 3.12+, exact executable/manifest bytes and packaged claims, default URI association and installed binary path, installed-CLI URI refusal with unchanged files/recovery, and separate online and offline direct CLI Undo with exact data and no offline spawn. Not a desktop Review pass
+- `tests/installed.py <archive> --preview-cli-only --allow-user-integration --report <dir>`: Windows unsigned CLI/data/PATH smoke on an explicitly approved disposable profile; CLI URI refusal and owned PATH cleanup, not OS scheme registration or signed/desktop qualification
+- macOS `tests/installed.py --preview` also checks the installed handler association and owned app link. It requires `--allow-user-integration` on an explicitly authorized real-user profile; never grant that consent automatically in hosted CI
+- `tests/test_installed.py`: Synthetic assertion regressions for packaged claims, URI mutation detection, and disposable-profile gating
 - `python3 tests/macos-modes.py --report <dir>`: Source-only notifier/URI mode and child-lifecycle regression guard; no native behavior claim
 - `python3 tests/macos-archive.py --report <dir> --allow-native-staging`: macOS 15 arm64 native libarchive/canary/xattr boundaries in owned retained staging; no signed-app/staple or real-user installed proof
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry

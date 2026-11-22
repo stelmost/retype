@@ -36,7 +36,7 @@ The current required targets are defined in [Platforms](../docs/reference/platfo
 
 | Scope | Target | CI host and evidence limit |
 |---|---|---|
-| Required Debian 13 amd64 | `x86_64-unknown-linux-gnu` | Debian trixie container; exact preview archive, all 17 integration/data checks; not a real desktop session |
+| Required Debian 13 amd64 | `x86_64-unknown-linux-gnu` | Debian trixie container; exact preview archive, scheme registration, CLI URI refusal and online/offline Undo; not a real desktop session |
 | Required macOS 15 arm64 | `aarch64-apple-darwin` | `macos-15`; native build, fidelity and unsigned bundle smoke; safe archive/installed qualification still blocked |
 | Required Windows 10 22H2 amd64 | `x86_64-pc-windows-msvc` | `windows-2025` compatibility CI; exact unsigned preview CLI/data and owned PATH smoke, not Windows 10 desktop proof |
 | Best effort Debian ARM64 | `aarch64-unknown-linux-gnu` | Native Debian userspace and exact preview archive checks |
@@ -47,7 +47,7 @@ Windows MSVC builds use `-C target-feature=+crt-static`; a compile-time test gua
 
 Manual dispatch consumes only `retype-preview-*` artifacts and cannot publish. Tags consume only `retype-signed-*` artifacts and require all three primary archives; current preview producers cannot satisfy that gate. Canonical installer closure is generated before checksums. The final `SHA256SUMS` is signed last as `SHA256SUMS.minisig`, then every final archive and installer is reverified from trusted source. The tag must match the workspace version. Missing signed/native producers or inputs fails closed, not to preview.
 
-The signed asset set is archives, per-archive `.sha256` files, both standalone installers and their checksums, `SHA256SUMS`, `SHA256SUMS.minisig`, and GitHub build attestations. Attestations describe build provenance; they are not publisher signatures. Native Windows 10 22H2 and real desktop/session qualification remain separate release-approval gates.
+The signed asset set is archives, per-archive `.sha256` files, both standalone installers and their checksums, `SHA256SUMS`, `SHA256SUMS.minisig`, and GitHub build attestations. Attestations describe build provenance; they are not publisher signatures. Native Windows 10 22H2 and real desktop/session qualification, including [native notification Review](../docs/dev/testing.md#native-notification-review), remain separate release-approval gates.
 
 ## Script install
 
