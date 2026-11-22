@@ -45,9 +45,9 @@ $State = Join-Path $Prefix 'share\retype\user-state'
 $Config = Join-Path $Prefix 'user-config.toml'
 $Tag = 'v0.0.0-test'
 $Target = if ($architecture -eq 'Arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
-$Name = "retype-$Tag-$Target"
-$Release = Join-Path $Temp $Name
-$Archive = Join-Path $Temp "$Name.tar.gz"
+$ArchiveRoot = "retype-$Tag-$Target"
+$Release = Join-Path $Temp $ArchiveRoot
+$Archive = Join-Path $Temp "$ArchiveRoot.tar.gz"
 $Sums = Join-Path $Temp 'SHA256SUMS'
 $AppId = 'com.lapilliworks.retype.cli'
 $UriKey = 'HKCU:\Software\Classes\retype'
@@ -133,9 +133,9 @@ function Move-Item {
 }
 function Pack-Release([string]$Label) {
 	if (Test-Path $Archive) { Copy-Item $Archive (Join-Path $Report ($Label + '-previous.tar.gz')) }
-	& tar.exe -czf $Archive -C $Temp $Name
+	& tar.exe -czf $Archive -C $Temp $ArchiveRoot
 	if ($LASTEXITCODE -ne 0) { throw 'Could not assemble the local release' }
-	[IO.File]::WriteAllText($Sums, "$(Hash $Archive)  $Name.tar.gz`n")
+	[IO.File]::WriteAllText($Sums, "$(Hash $Archive)  $ArchiveRoot.tar.gz`n")
 	Copy-Item $Archive (Join-Path $Report ($Label + '.tar.gz'))
 }
 function Installed-Snapshot {
@@ -344,15 +344,15 @@ try {
 	[IO.File]::WriteAllBytes($receiptPath, $receiptBytes)
 	$env:RETYPE_ACTION = 'install'
 	$sumsBytes = [IO.File]::ReadAllBytes($Sums)
-	[IO.File]::AppendAllText($Sums, "$(Hash $Archive)  $Name.tar.gz`n")
+	[IO.File]::AppendAllText($Sums, "$(Hash $Archive)  $ArchiveRoot.tar.gz`n")
 	Copy-Item $Sums (Join-Path $Report 'duplicate-SHA256SUMS')
 	Refused 'duplicate-checksum' 'exactly one valid checksum'
 	Check 'Duplicate checksum leaves installation exact' ((Installed-Snapshot) -ceq $previous)
 	[IO.File]::WriteAllBytes($Sums, $sumsBytes)
 	Copy-Item $Archive (Join-Path $Report 'before-duplicate-archive.tar.gz')
-	& tar.exe -czf $Archive -C $Temp $Name $Name
+	& tar.exe -czf $Archive -C $Temp $ArchiveRoot $ArchiveRoot
 	if ($LASTEXITCODE -ne 0) { throw 'Could not assemble the duplicate-member fixture' }
-	[IO.File]::WriteAllText($Sums, "$(Hash $Archive)  $Name.tar.gz`n")
+	[IO.File]::WriteAllText($Sums, "$(Hash $Archive)  $ArchiveRoot.tar.gz`n")
 	Copy-Item $Archive (Join-Path $Report 'duplicate-archive.tar.gz')
 	Refused 'duplicate-archive' 'Unsafe or duplicate archive member'
 	Check 'Duplicate archive members refuse before publication' ((Installed-Snapshot) -ceq $previous)

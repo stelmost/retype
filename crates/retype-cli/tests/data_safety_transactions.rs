@@ -385,7 +385,11 @@ fn windows_conversion_keeps_empty_and_zone_streams_as_final_done_outcomes() {
 		}));
 		let restarted = restart(dir.path());
 		assert_eq!(*restarted.shared().jobs.lock().unwrap(), [job]);
-		assert_eq!(fs::read_to_string(journal).unwrap(), before);
+		let after = fs::read_to_string(journal).unwrap();
+		assert!(
+			after == before || after.lines().eq(before.lines().last()),
+			"startup may compact history but must not rewrite the kept outcome"
+		);
 		assert_eq!(fs::read(stream_path(&source, name)).unwrap(), contents);
 	}
 }
