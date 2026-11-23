@@ -13,7 +13,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0-alpha"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "ISC"
 repository = "https://github.com/LapilliWorks/retype"
 

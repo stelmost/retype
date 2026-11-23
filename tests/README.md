@@ -12,7 +12,7 @@ Install a supported Rust toolchain with `rustfmt`, Clippy and native build tools
 cargo install cargo-nextest --locked --version 0.9.151
 ```
 
-Building that nextest version from source needs Rust 1.91 or newer, independently of Retype's Rust 1.85 floor. On Debian stable with its packaged Rust 1.85.1, use a compatible prebuilt nextest binary or a newer build toolchain. A nextest executable built on unstable may require a newer glibc and is not automatically portable to stable.
+Retype requires Rust 1.88 or newer. Building that nextest version from source requires Rust 1.91 or newer. On Debian stable, use a toolchain that meets the Retype minimum. For nextest, use a compatible prebuilt binary or a toolchain that meets its minimum. A nextest executable built on unstable may require a newer glibc than stable provides.
 
 Install ImageMagick 7.1+ with HEIC decoding, FFmpeg/FFprobe, Pandoc, a PDF engine and 7-Zip. These helpers install external tools using package managers already on the machine; they do not install Rust, bootstrap a package manager, enable repositories or configure a Retype service:
 

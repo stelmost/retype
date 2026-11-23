@@ -26,7 +26,7 @@ Earlier [Debian qualification run 44814840504](https://github.com/lapilliworks/r
 
 | Item | Value |
 |---|---|
-| MSRV | Rust 1.85, required by edition 2024 |
+| MSRV | Rust 1.88 |
 | Pinned toolchain in CI | The stable channel at build time, plus one job on the MSRV |
 | Edition | 2024 |
 
