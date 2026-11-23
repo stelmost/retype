@@ -70,7 +70,7 @@ Compilation has its own deadline before the shared execution budget starts. The 
 - `python3 tests/macos-archive.py --report <dir> --allow-native-staging`: macOS 15 arm64 native libarchive/canary/xattr boundaries in owned retained staging; no signed-app/staple or real-user installed proof
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry
 - `tests/windows-storage-faults.ps1 -Worker <core-test-exe> -Report <new-dir>`: Actual disk exhaustion on a new 64 MiB virtual NTFS disk; requires an elevated orchestrator and active ordinary-user desktop, retains evidence and detaches the disk
-- `tests/install.ps1 -Binary <path> [-Report <new-dir>]`: Windows installer/update/removal fixture with narrow registry/PATH doubles; requires both binaries from `--features windows-review --bins`. The Windows suite enables that feature for the Cargo fixture. Its existing 60-second Cargo budget still needs native qualification
+- `tests/install.ps1 -Binary <path> [-Report <new-dir>]`: Windows installer/update/removal fixture with narrow registry/PATH doubles; requires both binaries from `--features windows-review --bins`. The Windows suite enables that feature for the Cargo fixture
 - `tests/release.sh`: Synthetic release-assembly and checksum failures, intended for Linux release CI; failed fixtures retained before cleanup
 - `python3 scripts/embed-trust.py --check <installer>`: Canonical dependency-complete verifier block consistency, not publisher/native trust
 - `tests/hyperv-info.ps1`: Read-only Hyper-V host/guest collection; see `docs/dev/hyperv.md`
