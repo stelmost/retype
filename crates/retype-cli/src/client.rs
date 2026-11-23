@@ -25,6 +25,11 @@ pub fn connect(state_dir: &Path) -> Result<Client> {
 	Ok(retype_client::connect(&context(state_dir, false)?)?)
 }
 
+/// Check for a running daemon without starting one, preserving greeting failures.
+pub fn connect_if_running(state_dir: &Path) -> Result<Option<Client>> {
+	Ok(retype_client::connect_if_running(&context(state_dir, false)?)?)
+}
+
 /// Connect, starting a daemon if none answers and starting one is allowed.
 pub fn connect_or_spawn(state_dir: &Path, allow_spawn: bool) -> Result<Client> {
 	Ok(retype_client::connect_or_spawn(&context(state_dir, allow_spawn)?)?)

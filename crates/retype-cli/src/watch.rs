@@ -290,11 +290,11 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 		if signal != crate::daemon::signals::Asked::Nothing {
 			return Ok(ExitCode::SUCCESS);
 		}
-		let mut client = match crate::client::connect(state_dir) {
-			Ok(client) => client,
-			Err(error) => {
+		let mut client = match crate::client::connect_if_running(state_dir)? {
+			Some(client) => client,
+			None => {
 				if !allow_spawn {
-					return Err(error);
+					return Err(crate::error::Error::DaemonUnavailable);
 				}
 				if crate::daemon::lifecycle::permit_restart(state_dir)?
 					== crate::daemon::lifecycle::RestartPermission::WaitForOwner
@@ -308,7 +308,9 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 				let previous_boot = crate::daemon::lifecycle::read(state_dir)?.boot;
 				match crate::client::connect_or_spawn(state_dir, true) {
 					Ok(client) => client,
-					Err(error) if crate::daemon::lifecycle::read(state_dir)?.boot != previous_boot => {
+					Err(error @ crate::error::Error::DaemonStartFailed(..))
+						if crate::daemon::lifecycle::read(state_dir)?.boot != previous_boot =>
+					{
 						eprintln!("retype: replacement daemon stopped before connection: {error}");
 						continue;
 					}

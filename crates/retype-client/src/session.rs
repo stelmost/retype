@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use retype_ipc::Client;
+use retype_ipc::{Client, ClientError};
 
 use crate::error::{Error, Result};
 use crate::state;
@@ -123,12 +123,26 @@ pub fn connect(context: &Context) -> Result<Client> {
 	Ok(client)
 }
 
+/// Return no client only if there is no listening endpoint.
+pub fn connect_if_running(context: &Context) -> Result<Option<Client>> {
+	use std::io::ErrorKind;
+
+	match connect(context) {
+		Ok(client) => Ok(Some(client)),
+		Err(Error::DaemonUnavailable) => Ok(None),
+		Err(Error::Client(ClientError::Connect(error)))
+			if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) =>
+		{
+			Ok(None)
+		}
+		Err(error) => Err(error),
+	}
+}
+
 /// Connect, starting a daemon if none answers and starting one is allowed.
 pub fn connect_or_spawn(context: &Context) -> Result<Client> {
-	match connect(context) {
-		Ok(client) => return Ok(client),
-		Err(Error::Client(error)) if error.is_connection_busy() => return Err(Error::Client(error)),
-		Err(_) => {}
+	if let Some(client) = connect_if_running(context)? {
+		return Ok(client);
 	}
 
 	if !context.allow_spawn || spawn_suppressed() {
@@ -234,10 +248,8 @@ pub fn wait_for(context: &Context, spawned: &mut Spawned) -> Result<Client> {
 	let mut delay = FIRST_DELAY;
 
 	while Instant::now() < deadline {
-		match connect(context) {
-			Ok(client) => return Ok(client),
-			Err(Error::Client(error)) if error.is_connection_busy() => return Err(Error::Client(error)),
-			Err(_) => {}
+		if let Some(client) = connect_if_running(context)? {
+			return Ok(client);
 		}
 		std::thread::sleep(delay.min(deadline.saturating_duration_since(Instant::now())));
 		delay = (delay * 2).min(MAX_DELAY);

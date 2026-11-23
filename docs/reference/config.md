@@ -35,7 +35,6 @@ Environment variables, all optional:
 | `RETYPE_STATE_DIR` | State directory, overriding platform defaults |
 | `RETYPE_CONFIG` | User configuration path, instead of the platform default. A daemon started by a client inherits the path the client used, so both read the same file |
 | `RETYPE_NO_SPAWN` | Clients never start the daemon; the command-line spelling is `--no-spawn` |
-| `RETYPE_DAEMON` | The CLI binary a client starts as `daemon --detached`, instead of its own executable. The GUI points this at its bundled CLI |
 | `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
 | `RETYPE_FIXTURES` | Property fixtures for `retype fidelity`, instead of `fixtures/fidelity`; `--fixtures` wins |
 | `RETYPE_FIDELITY_MANIFEST` | Manifest `retype why` and `retype fidelity` read when no path is given; `retype fidelity`'s flags win |

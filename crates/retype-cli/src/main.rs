@@ -877,7 +877,7 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 
 	match action {
 		DaemonAction::Start => {
-			if let Ok(mut running) = client::connect(&state_dir) {
+			if let Some(mut running) = client::connect_if_running(&state_dir)? {
 				let status = running.call_without_params("status")?;
 				print_status(&status, cli.json);
 				return Ok(ExitCode::SUCCESS);

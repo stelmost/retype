@@ -209,6 +209,87 @@ fn startup_retries_a_child_that_lost_the_shutdown_lock_handoff() {
 	assert!(client.status().unwrap().pid > 0);
 }
 
+#[cfg(unix)]
+fn refuse_greeting(listener: &std::os::unix::net::UnixListener) {
+	use retype_core::error::Code;
+	use std::io::BufReader;
+	use std::time::{Duration, Instant};
+
+	let deadline = Instant::now() + Duration::from_secs(5);
+	listener.set_nonblocking(true).unwrap();
+	let mut stream = loop {
+		match listener.accept() {
+			Ok((stream, _)) => break stream,
+			Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+				std::thread::sleep(Duration::from_millis(5));
+			}
+			Err(error) => panic!("client did not connect: {error}"),
+		}
+	};
+	stream.set_nonblocking(false).unwrap();
+	stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+	let request = retype_ipc::read_frame(&mut BufReader::new(&stream)).unwrap().unwrap();
+	assert_eq!(request["method"], "hello");
+	let response = retype_ipc::Response::error(
+		request["id"].as_u64().unwrap(),
+		retype_ipc::WireError::new(Code::IpcVersion, "this daemon speaks retype-ipc-2"),
+	);
+	retype_ipc::write_frame(&mut stream, &response).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_reports_an_existing_daemons_protocol_refusal_without_starting_again() {
+	use std::os::unix::net::UnixListener;
+
+	let dir = tempfile::tempdir().unwrap();
+	let endpoint = retype_cli::state::socket_path(dir.path()).unwrap();
+	let listener = UnixListener::bind(&endpoint).unwrap();
+	retype_cli::state::publish_endpoint(dir.path(), endpoint.to_str().unwrap()).unwrap();
+	for args in [&["status"][..], &["status", "--no-spawn"], &["start"]] {
+		std::thread::scope(|scope| {
+			let daemon = scope.spawn(|| refuse_greeting(&listener));
+			let output = retype()
+				.arg("daemon")
+				.args(args)
+				.arg("--state-dir")
+				.arg(dir.path())
+				.arg("--json")
+				.env_remove("RETYPE_NO_SPAWN")
+				.output()
+				.unwrap();
+			daemon.join().unwrap();
+			assert!(!output.status.success(), "{output:?}");
+			let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+			assert_eq!(answer["error"]["code"], "E_IPC_VERSION", "{answer}");
+			assert_eq!(answer["error"]["message"], "this daemon speaks retype-ipc-2");
+			assert!(!dir.path().join("daemon.log").exists());
+			assert!(!dir.path().join("lifecycle.json").exists());
+		});
+	}
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_reports_the_protocol_refusal_of_a_daemon_that_wins_the_race() {
+	use std::os::unix::net::UnixListener;
+
+	let dir = tempfile::tempdir().unwrap();
+	let endpoint = retype_cli::state::socket_path(dir.path()).unwrap();
+	let listener = UnixListener::bind(&endpoint).unwrap();
+	let context = retype_client::Context::new(dir.path())
+		.unwrap()
+		.with_daemon(retype_client::Daemon::at("true"));
+	let mut spawned = retype_client::spawn_detached(&context).unwrap();
+	retype_cli::state::publish_endpoint(dir.path(), endpoint.to_str().unwrap()).unwrap();
+	std::thread::scope(|scope| {
+		let daemon = scope.spawn(|| refuse_greeting(&listener));
+		let error = retype_client::wait_for(&context, &mut spawned).unwrap_err();
+		daemon.join().unwrap();
+		assert_eq!(error.code(), retype_core::error::Code::IpcVersion);
+	});
+}
+
 #[test]
 fn starting_twice_is_not_an_error() {
 	let dir = tempfile::tempdir().unwrap();

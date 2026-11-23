@@ -17,7 +17,7 @@ Clients start the daemon when they need it. Auto-start is the default because a 
 Client start sequence:
 
 1. Try to connect
-2. On failure, spawn `retype daemon --detached` and retry connecting with backoff for up to 3 s; retry a candidate refused by the state lock within that same deadline. A killed or normally exited candidate returns control to the caller's crash policy
+2. If the endpoint is missing or refuses the transport connection, spawn `retype daemon --detached` and retry connecting with backoff for up to 3 s. Retry a candidate refused by the state lock within that same deadline. A killed or normally exited candidate returns control to the caller's crash policy. A failed `hello` is reported in both the initial connection and the startup wait
 3. If the socket still does not answer, report `E_IPC_UNAVAILABLE` with the spawn log path
 4. Racing clients are harmless: all spawn candidates contend for the lock, one wins, the rest exit, and every client connects to the winner
 5. The endpoint is published after the first registration round, or after two seconds if that round is stalled. `watch.list` and `status` separately report per-root watcher readiness; an endpoint does not imply a successful watcher or completed identity scan
