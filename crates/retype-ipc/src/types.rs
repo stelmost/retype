@@ -68,6 +68,8 @@ pub struct Status {
 	pub pid: u32,
 	pub machine: String,
 	pub uptime_ms: u64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub config_path: Option<PathBuf>,
 	#[serde(default)]
 	pub jobs: usize,
 	#[serde(default)]

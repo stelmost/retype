@@ -113,6 +113,8 @@ Daemons advertise `recovery`. `recovery.undo` accepts the existing undo selector
 
 `shutdown` reads `force` and `now`. Without `force`, a daemon a supervisor started refuses with `E_IPC_SUPERVISED` and names the supervisor, §2. With `now`, cancellation requests and queued cancellation snapshots are issued promptly, recovery receives cancellation, and the answer carries how many conversions were stopped. Worker joins and final durable recovery outcomes happen after the reply; an already authorized filesystem transition finishes or leaves explicit pinned recovery.
 
+`status` reports `config_path`, the absolute path selected at daemon startup, even if the file is absent. Relative paths are resolved in the daemon's working directory. The field is null when no path is available or the path cannot be represented as UTF-8.
+
 `status` reports undo `retained`, `reserved`, `goal` and `overage` source bytes. Unreadable recovery state is exposed as `undo_error` without ending the daemon connection. Durable pinned reservation manifests count after restart. Storage parks retain the verified input fingerprint and have no deadline; capacity permits a fresh admission check without discarding protected recovery.
 
 `status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment of the process the supervisor actually runs rather than from the process tree. A daemon the CLI started itself has had those variables cleared, so it reports null.

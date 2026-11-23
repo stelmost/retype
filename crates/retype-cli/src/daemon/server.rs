@@ -71,6 +71,7 @@ enum DaemonLifecycle {
 
 pub struct Server {
 	endpoint: Option<String>,
+	config_path: Option<PathBuf>,
 	shared: Arc<Shared>,
 	pool: Arc<crate::daemon::queue::Pool>,
 	recovery: Arc<super::recovery::Pool>,
@@ -91,6 +92,7 @@ impl Server {
 	/// Open the state the daemon owns, replaying the journal so `jobs.list`
 	/// answers from what survives rather than from what this process did.
 	pub fn open(state_dir: &Path) -> Result<Self> {
+		let config_path = crate::config::user_path().map(std::path::absolute).transpose()?;
 		let registry = crate::config::load()?;
 		let (mut journal, replay) = Journal::open(&state_dir.join("jobs.jsonl"))?;
 
@@ -181,6 +183,7 @@ impl Server {
 
 		Ok(Self {
 			endpoint: None,
+			config_path,
 			shared,
 			pool,
 			recovery,
@@ -1534,6 +1537,7 @@ impl Server {
 					json!({
 					"pid": std::process::id(),
 					"machine": self.machine,
+					"config_path": self.config_path.as_deref().and_then(Path::to_str),
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
 					"jobs": self.shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default(),
 					"undo": undo,

@@ -62,6 +62,7 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 	vec![
 		("pid".to_string(), field("pid")),
 		("machine".to_string(), field("machine")),
+		("config".to_string(), field("config_path")),
 		(
 			"uptime".to_string(),
 			format_uptime(status["uptime_ms"].as_u64().unwrap_or_default()),

@@ -308,6 +308,36 @@ fn starting_twice_is_not_an_error() {
 }
 
 #[test]
+fn status_shows_the_config_path_selected_by_the_daemon() {
+	let dir = tempfile::tempdir().unwrap();
+	let work = dir.path().join("daemon working directory");
+	std::fs::create_dir(&work).unwrap();
+	let config = work.join("selected.toml");
+	std::fs::write(&config, "version = 'retype-config-1'\n[notify]\nenabled = false\n").unwrap();
+	let state = dir.path().join("state");
+	let _daemon = Daemon { state: state.clone() };
+	let started = retype()
+		.args(["daemon", "start", "--config", "selected.toml", "--state-dir"])
+		.arg(&state)
+		.current_dir(&work)
+		.output()
+		.unwrap();
+	assert!(started.status.success(), "{started:?}");
+	let report = retype()
+		.args(["daemon", "status", "--no-spawn", "--json", "--state-dir"])
+		.arg(&state)
+		.current_dir(dir.path())
+		.env("RETYPE_CONFIG", "other.toml")
+		.output()
+		.unwrap();
+	assert!(report.status.success(), "{report:?}");
+	let status: retype_ipc::Status = serde_json::from_slice(&report.stdout).unwrap();
+	let selected = status.config_path.unwrap();
+	assert!(selected.is_absolute(), "{selected:?}");
+	assert_eq!(selected.canonicalize().unwrap(), config.canonicalize().unwrap());
+}
+
+#[test]
 fn suppressed_spawn_reports_the_daemon_missing() {
 	let dir = tempfile::tempdir().unwrap();
 
