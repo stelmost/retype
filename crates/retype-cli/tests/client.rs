@@ -134,6 +134,7 @@ fn the_status_lines_are_what_a_human_needs() {
 		vec![
 			"pid",
 			"machine",
+			"config",
 			"uptime",
 			"jobs",
 			"parked",
