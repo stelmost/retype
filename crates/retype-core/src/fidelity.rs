@@ -9,13 +9,18 @@
 //! against each machine's tools. It is not state, so it does not live in the state
 //! directory.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Code, Diagnostic, Error, Result};
+use crate::execute::Cancellation;
 use crate::job::Tier;
+use crate::plan::Presence;
+use crate::tools::{self, Tool};
 
 /// Schema identifier, `docs/fidelity.md` §4.
 pub const FIDELITY_VERSION: &str = "retype-fidelity-1";
@@ -120,6 +125,76 @@ impl Evidence {
 	}
 }
 
+#[derive(Clone)]
+struct ToolBuild {
+	executable: Option<String>,
+	version: String,
+	fingerprint: String,
+}
+
+impl ToolBuild {
+	fn probe(tool: &Tool, engine: Option<&str>, cancellation: &Cancellation) -> Self {
+		let engine_tool;
+		let tool = match engine {
+			Some(candidate) => {
+				let mut declaration = tool.clone();
+				declaration.command = candidate.to_string();
+				declaration.aliases.clear();
+				declaration.probe = vec!["--version".to_string()];
+				declaration.version_min = None;
+				declaration.components.clear();
+				engine_tool = declaration;
+				&engine_tool
+			}
+			None => tool,
+		};
+		let status = tools::probe_cancellable(tool, cancellation);
+		Self {
+			executable: status.executable().map(str::to_string),
+			version: status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
+			fingerprint: status.fingerprint().unwrap_or_default(),
+		}
+	}
+}
+
+/// Reuse tool probes while planning and qualifying the pairs in one report.
+#[derive(Default)]
+pub struct ReportProbes {
+	builds: RefCell<BTreeMap<(String, Option<String>), ToolBuild>>,
+}
+
+impl ReportProbes {
+	fn build(&self, tool: &Tool, engine: Option<&str>) -> ToolBuild {
+		self.builds
+			.borrow_mut()
+			.entry((tool.name.clone(), engine.map(str::to_string)))
+			.or_insert_with(|| ToolBuild::probe(tool, engine, &Cancellation::default()))
+			.clone()
+	}
+
+	pub fn qualify(
+		&self,
+		manifest: &Manifest,
+		registry: &crate::registry::Registry,
+		source: &str,
+		plans: &mut [crate::plan::Plan],
+	) {
+		qualify_using(manifest, registry, source, plans, &|tool, engine| {
+			self.build(tool, engine)
+		});
+	}
+}
+
+impl Presence for ReportProbes {
+	fn command(&self, tool: &Tool) -> Option<String> {
+		self.build(tool, None).executable
+	}
+
+	fn engine(&self, tool: &Tool, name: &str) -> Option<String> {
+		tools::resolve_engine(tool, name).map(str::to_string)
+	}
+}
+
 /// What the release says about a pair and whether this machine still matches it.
 ///
 /// A native container is made by this build, so its version is this build's and
@@ -140,7 +215,7 @@ pub fn claim_for<'a>(
 		target,
 		backend,
 		engine,
-		&crate::execute::Cancellation::default(),
+		&Cancellation::default(),
 	)
 }
 
@@ -151,7 +226,21 @@ pub fn claim_for_cancellable<'a>(
 	target: &str,
 	backend: &str,
 	engine: Option<&str>,
-	cancellation: &crate::execute::Cancellation,
+	cancellation: &Cancellation,
+) -> PairClaim<'a> {
+	claim_for_using(manifest, registry, source, target, backend, engine, &|tool, engine| {
+		ToolBuild::probe(tool, engine, cancellation)
+	})
+}
+
+fn claim_for_using<'a>(
+	manifest: &'a Manifest,
+	registry: &crate::registry::Registry,
+	source: &str,
+	target: &str,
+	backend: &str,
+	engine: Option<&str>,
+	probe: &impl Fn(&Tool, Option<&str>) -> ToolBuild,
 ) -> PairClaim<'a> {
 	let archive_tool = registry
 		.format(source)
@@ -162,30 +251,18 @@ pub fn claim_for_cancellable<'a>(
 	let tool = registry.tool(backend).or(archive_tool);
 	let (version, fingerprint, is_usable) = match tool {
 		Some(tool) => {
-			let status = crate::tools::probe_cancellable(tool, cancellation);
-			(
-				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
-				status.fingerprint().unwrap_or_default(),
-				status.is_usable() && status.version.is_some() && status.fingerprint().is_some(),
-			)
+			let build = probe(tool, None);
+			let is_usable = build.executable.is_some() && !build.version.is_empty() && !build.fingerprint.is_empty();
+			(build.version, build.fingerprint, is_usable)
 		}
 		None => (env!("CARGO_PKG_VERSION").to_string(), String::new(), true),
 	};
 
 	let (engine_version, engine_fingerprint) = match (tool, engine) {
 		(Some(tool), Some(candidate)) => {
-			let mut engine_tool = tool.clone();
-			engine_tool.command = candidate.to_string();
-			engine_tool.aliases.clear();
-			engine_tool.probe = vec!["--version".to_string()];
-			engine_tool.version_min = None;
-			engine_tool.components.clear();
-			let status = crate::tools::probe_cancellable(&engine_tool, cancellation);
-			if status.is_usable() {
-				(
-					status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
-					status.fingerprint().unwrap_or_default(),
-				)
+			let build = probe(tool, Some(candidate));
+			if build.executable.is_some() {
+				(build.version, build.fingerprint)
 			} else {
 				(String::new(), String::new())
 			}
@@ -226,13 +303,7 @@ pub fn qualify(
 	source: &str,
 	plans: &mut [crate::plan::Plan],
 ) {
-	qualify_cancellable(
-		manifest,
-		registry,
-		source,
-		plans,
-		&crate::execute::Cancellation::default(),
-	);
+	qualify_cancellable(manifest, registry, source, plans, &Cancellation::default());
 }
 
 pub fn qualify_cancellable(
@@ -240,17 +311,29 @@ pub fn qualify_cancellable(
 	registry: &crate::registry::Registry,
 	source: &str,
 	plans: &mut [crate::plan::Plan],
-	cancellation: &crate::execute::Cancellation,
+	cancellation: &Cancellation,
+) {
+	qualify_using(manifest, registry, source, plans, &|tool, engine| {
+		ToolBuild::probe(tool, engine, cancellation)
+	});
+}
+
+fn qualify_using(
+	manifest: &Manifest,
+	registry: &crate::registry::Registry,
+	source: &str,
+	plans: &mut [crate::plan::Plan],
+	probe: &impl Fn(&Tool, Option<&str>) -> ToolBuild,
 ) {
 	for plan in plans {
-		let current = claim_for_cancellable(
+		let current = claim_for_using(
 			manifest,
 			registry,
 			source,
 			&plan.format,
 			plan.backend.name(),
 			plan.engine.as_ref().map(|(_, candidate)| candidate.as_str()),
-			cancellation,
+			probe,
 		);
 		plan.fidelity = Some(Evidence {
 			state: current.state,

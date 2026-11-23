@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::ExitCode;
 
+use retype_core::fidelity::{self, Manifest, ReportProbes};
 use retype_core::job::Tier;
 use retype_core::registry::Registry;
 use retype_core::resolve::Source as Origin;
@@ -21,14 +22,14 @@ use retype_core::{intent, plan, resolve};
 use crate::error::Result;
 
 pub fn run(registry: &Registry, state_dir: Option<&Path>, tiers: bool, json: bool) -> Result<ExitCode> {
-	let probes: BTreeMap<&str, ToolStatus<'_>> = registry
-		.tools()
-		.map(|tool| (tool.name.as_str(), tools::probe(tool)))
-		.collect();
-
-	match tiers {
-		false => describe(registry, &probes, json),
-		true => pairs(registry, &retype_core::fidelity::open_for(state_dir)?, json),
+	if tiers {
+		pairs(registry, &fidelity::open_for(state_dir)?, json);
+	} else {
+		let probes = registry
+			.tools()
+			.map(|tool| (tool.name.as_str(), tools::probe(tool)))
+			.collect();
+		describe(registry, &probes, json);
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -167,8 +168,9 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 }
 
 /// One line per pair: release evidence and the backend that would carry it.
-fn pairs(registry: &Registry, manifest: &retype_core::fidelity::Manifest, json: bool) {
+fn pairs(registry: &Registry, manifest: &Manifest, json: bool) {
 	let names: Vec<&str> = registry.formats().map(|(name, _)| name.as_str()).collect();
+	let probes = ReportProbes::default();
 
 	if !json {
 		println!(
@@ -183,7 +185,7 @@ fn pairs(registry: &Registry, manifest: &retype_core::fidelity::Manifest, json: 
 				continue;
 			}
 
-			let (tier, backend, error, engine, evidence) = claim(registry, manifest, from, to);
+			let (tier, backend, error, engine, evidence) = claim(registry, manifest, &probes, from, to);
 
 			if json {
 				println!(
@@ -241,12 +243,12 @@ type PairClaim = (
 	Option<String>,
 	Option<String>,
 	Option<String>,
-	Option<retype_core::fidelity::Evidence>,
+	Option<fidelity::Evidence>,
 );
 
 /// The tier a pair declares and the backend that would produce it, which is the
 /// same plan a bare intent compiles to.
-fn claim(registry: &Registry, manifest: &retype_core::fidelity::Manifest, from: &str, to: &str) -> PairClaim {
+fn claim(registry: &Registry, manifest: &Manifest, probes: &ReportProbes, from: &str, to: &str) -> PairClaim {
 	let unclaimed = "unclaimed".to_string();
 
 	let Ok(parsed) = intent::parse(to) else {
@@ -267,9 +269,9 @@ fn claim(registry: &Registry, manifest: &retype_core::fidelity::Manifest, from: 
 		Err(problems) => return (unclaimed, None, Some(refusal(&problems)), None, None),
 	};
 
-	match plan::compile(registry, &tools::Machine, &resolved) {
+	match plan::compile(registry, probes, &resolved) {
 		Ok(mut plans) => {
-			retype_core::fidelity::qualify(manifest, registry, from, &mut plans);
+			probes.qualify(manifest, registry, from, &mut plans);
 			let Some(first) = plans.first() else {
 				return (unclaimed, None, None, None, None);
 			};
@@ -280,9 +282,7 @@ fn claim(registry: &Registry, manifest: &retype_core::fidelity::Manifest, from: 
 			(
 				evidence.reported_tier(first.tier).to_string(),
 				Some(name),
-				retype_core::fidelity::check(first)
-					.err()
-					.map(|error| error.code().to_string()),
+				fidelity::check(first).err().map(|error| error.code().to_string()),
 				engine,
 				Some(evidence.clone()),
 			)

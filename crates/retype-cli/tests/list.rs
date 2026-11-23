@@ -219,6 +219,35 @@ fn a_pair_that_no_single_tool_carries_is_not_offered() {
 	assert!(pair("mp4", "png").contains("E_UNSUPPORTED"), "{}", pair("mp4", "png"));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_pair_report_shares_one_probe_between_planning_and_fidelity() {
+	let dir = tempfile::tempdir().unwrap();
+	let config = dir.path().join("ffmpeg.toml");
+	fs::write(
+		&config,
+		"\
+version = 'retype-config-1'
+[backends]
+prefer = ['ffmpeg']
+[tools.ffmpeg]
+command = 'sh'
+probe = ['-c', 'echo probe >> calls; echo ffmpeg version 6.0']
+",
+	)
+	.unwrap();
+	let output = retype()
+		.args(["list", "--tiers"])
+		.env("RETYPE_CONFIG", &config)
+		.current_dir(dir.path())
+		.output()
+		.unwrap();
+	assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+	let stdout = String::from_utf8(output.stdout).unwrap();
+	assert!(stdout.lines().filter(|line| line.contains("ffmpeg")).count() > 1);
+	assert_eq!(fs::read_to_string(dir.path().join("calls")).unwrap(), "probe\n");
+}
+
 #[test]
 fn an_impossible_pair_keeps_the_code_out_of_the_backend_field() {
 	let dir = tempfile::tempdir().unwrap();
