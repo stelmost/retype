@@ -102,6 +102,57 @@ fn assert_missing_endpoint_refuses_offline_undo(state: &Path, id: &retype_core::
 	assert_daemon_reachable(state);
 }
 
+#[cfg(windows)]
+fn occupy_single_instance_pipe(endpoint: &str) -> (fs::File, retype_ipc::Client) {
+	use std::os::windows::io::FromRawHandle;
+	use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+	use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+	use windows_sys::Win32::System::Pipes::{
+		CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+	};
+
+	let name: Vec<u16> = endpoint.encode_utf16().chain([0]).collect();
+	let handle = unsafe {
+		CreateNamedPipeW(
+			name.as_ptr(),
+			PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+			1,
+			4096,
+			4096,
+			0,
+			std::ptr::null(),
+		)
+	};
+	assert_ne!(handle, INVALID_HANDLE_VALUE, "{}", std::io::Error::last_os_error());
+	let server = unsafe { fs::File::from_raw_handle(handle) };
+	let client = retype_ipc::Client::connect(Path::new(endpoint)).unwrap();
+	(server, client)
+}
+
+#[cfg(windows)]
+fn assert_busy_endpoint_refuses_undo_and_spawn(state: &Path, id: &retype_core::job::JobId) {
+	let endpoint = retype_cli::state::read_endpoint(state).unwrap();
+	let busy_endpoint = format!("{endpoint}-busy-fixture");
+	let _occupied = occupy_single_instance_pipe(&busy_endpoint);
+	let context = retype_client::Context::new(state)
+		.unwrap()
+		.with_daemon(retype_client::Daemon::at(state.join("must-not-start")));
+
+	retype_cli::state::publish_endpoint(state, &busy_endpoint).unwrap();
+	let undo = retype_cli::undo::run(state, Some(id.as_str()), false, false);
+	let connect = retype_client::connect_or_spawn(&context);
+	retype_cli::state::publish_endpoint(state, &endpoint).unwrap();
+
+	assert!(matches!(undo, Err(retype_cli::error::Error::Client(error)) if error.is_connection_busy()));
+	assert!(matches!(connect, Err(retype_client::Error::Client(error)) if error.is_connection_busy()));
+	assert!(
+		!state.join("daemon.log").exists(),
+		"a busy daemon must not be spawned again"
+	);
+	assert_daemon_reachable(state);
+}
+
 #[test]
 fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	let dir = tempfile::tempdir().unwrap();
@@ -209,24 +260,11 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 
 	#[cfg(windows)]
 	{
-		let held = retype_cli::client::connect(&state).unwrap();
-		let busy = retype_cli::undo::run(&state, Some(record.id.as_str()), false, false);
-		assert!(matches!(busy, Err(retype_cli::error::Error::Client(error)) if error.is_connection_busy()));
-		let context = retype_client::Context::new(&state)
-			.unwrap()
-			.with_daemon(retype_client::Daemon::at(dir.path().join("must-not-start")));
-		let busy = retype_client::connect_or_spawn(&context);
-		assert!(matches!(busy, Err(retype_client::Error::Client(error)) if error.is_connection_busy()));
-		assert!(
-			!state.join("daemon.log").exists(),
-			"a busy daemon must not be spawned again"
-		);
+		assert_busy_endpoint_refuses_undo_and_spawn(&state, &record.id);
 		assert!(!source.exists(), "busy undo must not restore or remove anything");
 		assert_eq!(fs::read(store.source(&record.id).unwrap().unwrap()).unwrap(), original);
 		assert_eq!(fs::read(&target).unwrap(), output);
 		assert!(store.load(&record.id).unwrap().is_some());
-		drop(held);
-		assert_daemon_reachable(&state);
 	}
 
 	let undo = retype()
