@@ -4,7 +4,9 @@ On-disk state for jobs, undo and calibration.
 
 ## 1. Layout
 
-State directory: `RETYPE_STATE_DIR` when set, otherwise `dirs::state_dir()` joined with `retype`, falling back to `dirs::data_local_dir()` when the former is absent, which is the case on macOS. Unix socket paths are length-limited, so a state directory that would overflow the limit is a startup error naming the limit and the variable.
+`--state-dir` overrides `RETYPE_STATE_DIR`, which overrides the platform default. On Unix, including macOS, the default is `$XDG_STATE_HOME/retype`, or `~/.local/state/retype` when `XDG_STATE_HOME` is unset or relative. On Windows it is `%LOCALAPPDATA%\retype\state\retype`. If the platform state location is unavailable, Retype uses `$XDG_DATA_HOME/retype` or `~/.local/share/retype` when available.
+
+Unix socket paths are length-limited. If the selected state directory would exceed that limit, startup reports the limit and names `RETYPE_STATE_DIR`.
 
 ```
 retype/
