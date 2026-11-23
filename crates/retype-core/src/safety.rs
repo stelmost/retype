@@ -276,6 +276,7 @@ pub enum MetadataAccess {
 }
 
 /// State files may not alias user data. Preserve normal sharing for locks and journal readers.
+/// A read-only open may finish on the old inode after atomic replacement.
 pub fn open_metadata_file(path: &Path, access: MetadataAccess) -> io::Result<File> {
 	let mut options = OpenOptions::new();
 	options.read(true);
@@ -294,6 +295,11 @@ pub fn open_metadata_file(path: &Path, access: MetadataAccess) -> io::Result<Fil
 		options.mode(0o600);
 	}
 	let file = open_regular_file(path, &mut options)?;
+	validate_metadata_file(&file, path, access)?;
+	Ok(file)
+}
+
+fn validate_metadata_file(file: &File, path: &Path, access: MetadataAccess) -> io::Result<()> {
 	#[cfg(unix)]
 	let links = {
 		use std::os::unix::fs::MetadataExt;
@@ -303,7 +309,7 @@ pub fn open_metadata_file(path: &Path, access: MetadataAccess) -> io::Result<Fil
 	let links = {
 		use std::os::windows::io::AsRawHandle;
 		use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
-		crate::fsx::windows::private::require_private(&file)?;
+		crate::fsx::windows::private::require_private(file)?;
 		let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
 		if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut information) } == 0 {
 			return Err(io::Error::last_os_error());
@@ -311,17 +317,19 @@ pub fn open_metadata_file(path: &Path, access: MetadataAccess) -> io::Result<Fil
 		u64::from(information.nNumberOfLinks)
 	};
 	#[cfg(not(any(unix, windows)))]
-	let links = 1;
-	if links != 1 {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			format!(
-				"{} has multiple hard links; state metadata cannot alias another file",
-				path.display()
-			),
-		));
-	}
-	Ok(file)
+	let links = {
+		let _ = file;
+		1
+	};
+	let reason = match (links, access) {
+		(1, _) | (0, MetadataAccess::Read) => return Ok(()),
+		(0, _) => "was unlinked while opening for mutation",
+		_ => "has multiple hard links; state metadata cannot alias another file",
+	};
+	Err(io::Error::new(
+		io::ErrorKind::InvalidData,
+		format!("{} {reason}", path.display()),
+	))
 }
 
 pub fn read_metadata(path: &Path) -> io::Result<Vec<u8>> {
@@ -745,6 +753,44 @@ mod tests {
 		let second = Fingerprint::of_open_file(&path, &mut file).unwrap();
 		assert_eq!(first, second);
 		assert_eq!(first.bytes, b"original bytes".len() as u64);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn an_atomic_metadata_replacement_preserves_the_open_read_snapshot() {
+		let directory = tempfile::tempdir().unwrap();
+		let path = directory.path().join("meta.toml");
+		let replacement = directory.path().join("next.toml");
+		fs::write(&path, "original").unwrap();
+		fs::write(&replacement, "replacement").unwrap();
+		let mut snapshot = regular_file(&path).unwrap();
+		fs::rename(replacement, &path).unwrap();
+
+		validate_metadata_file(&snapshot, &path, MetadataAccess::Read).unwrap();
+		for access in [MetadataAccess::Append, MetadataAccess::Update] {
+			assert_eq!(
+				validate_metadata_file(&snapshot, &path, access).unwrap_err().kind(),
+				io::ErrorKind::InvalidData
+			);
+		}
+		let mut original = String::new();
+		snapshot.read_to_string(&mut original).unwrap();
+		assert_eq!(original, "original");
+		assert_eq!(read_metadata_text(&path).unwrap(), "replacement");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_metadata_read_still_refuses_a_live_hard_link() {
+		let directory = tempfile::tempdir().unwrap();
+		let path = directory.path().join("meta.toml");
+		let other = directory.path().join("other");
+		fs::write(&other, "unrelated data").unwrap();
+		fs::hard_link(other, &path).unwrap();
+		assert_eq!(
+			read_metadata_text(&path).unwrap_err().kind(),
+			io::ErrorKind::InvalidData
+		);
 	}
 
 	#[test]
