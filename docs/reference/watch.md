@@ -140,3 +140,5 @@ Review requires a verified ordinary-user graphical session. Without actions, you
 Linux Review retains the batch summary and shows the count if Undo would cover multiple conversions. A Windows or macOS Review action uses `retype://job/<full-job-id>` and selects only that job. Multi-job notifications stay plain on those platforms. If a job has no completed output or its recovery is unavailable, unfinished, or too large to display in full, Review does not offer Undo.
 
 Opening Review does not change the original, outputs or recovery. **Close** is the default. Closing the window, Escape, timeout or a helper error does not consent to anything. Undo requires an explicit local **Undo** choice after every affected original and output is shown. Retype rechecks that exact snapshot under its existing locks and uses checked restoration to remove only unchanged, job-owned outputs.
+
+When the daemon is running, it handles Review Undo as one durable recovery operation. With the daemon stopped, Review holds the state lock through Undo. Review never starts a daemon.

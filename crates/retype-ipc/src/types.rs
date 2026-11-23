@@ -256,6 +256,14 @@ pub struct UndoRequest {
 	pub last: bool,
 }
 
+/// Undo the exact retained records approved together in Desktop Review.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovedUndoRequest {
+	pub operation_id: JobId,
+	pub approved: Vec<retype_core::undo::Record>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Undone {
 	pub id: JobId,
@@ -288,6 +296,8 @@ pub enum RecoveryState {
 pub struct RecoveryOperation {
 	pub id: JobId,
 	pub job: JobId,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub additional_jobs: Vec<JobId>,
 	pub action: RecoveryAction,
 	pub state: RecoveryState,
 	pub updated: i64,

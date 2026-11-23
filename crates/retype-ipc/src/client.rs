@@ -14,6 +14,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use retype_core::error::Code;
+use retype_core::job::JobId;
 
 use crate::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError};
 
@@ -291,38 +292,71 @@ impl Client {
 		{
 			return self.typed("undo", request);
 		}
-		let id = retype_core::job::JobId::now().map_err(|error| ClientError::Protocol(error.to_string()))?;
-		let operation: crate::RecoveryOperation = self
-			.typed(
-				"recovery.undo",
-				serde_json::json!({"id": request.id, "last": request.last, "operation_id": id}),
-			)
-			.map_err(|error| recovery_error(error, &id))?;
+		let id = JobId::now().map_err(|error| ClientError::Protocol(error.to_string()))?;
+		let params = serde_json::json!({"id": request.id, "last": request.last, "operation_id": id});
+		let operation = self.recover_undo(&id, params)?;
+		operation
+			.result
+			.ok_or_else(|| ClientError::Protocol("undo completed without a result".into()))
+	}
+
+	pub fn undo_approved(&mut self, approved: Vec<retype_core::undo::Record>) -> Result<(), ClientError> {
+		if !self.daemon.as_ref().is_some_and(|daemon| {
+			daemon
+				.features
+				.iter()
+				.any(|feature| feature == "recovery.undo.approved")
+		}) {
+			return Err(ClientError::Rpc(Box::new(WireError::new(
+				Code::IpcVersion,
+				"restart the daemon with this build before using Review Undo",
+			))));
+		}
+		let id = JobId::now().map_err(|error| ClientError::Protocol(error.to_string()))?;
+		let request = crate::ApprovedUndoRequest {
+			operation_id: id.clone(),
+			approved,
+		};
+		self.recover_undo(&id, request)?;
+		Ok(())
+	}
+
+	fn recover_undo(&mut self, id: &JobId, params: impl Serialize) -> Result<crate::RecoveryOperation, ClientError> {
 		let endpoint = self
 			.endpoint
 			.clone()
 			.ok_or_else(|| ClientError::Protocol("recovery polling requires a known endpoint".into()))?;
+		let operation: crate::RecoveryOperation = self.typed("recovery.undo", params).map_err(|error| match error {
+			ClientError::Rpc(_) => error,
+			_ => recovery_unknown(error, id),
+		})?;
+		if &operation.id != id {
+			return Err(recovery_unknown("the daemon returned a different recovery handle", id));
+		}
 		self.connection = Connection::Unavailable;
 		loop {
-			let mut client = Self::connect(&endpoint).map_err(|error| recovery_error(error, &operation.id))?;
+			let mut client = Self::connect(&endpoint).map_err(|error| recovery_unknown(error, id))?;
 			client
 				.hello("retype-recovery")
-				.map_err(|error| recovery_error(error, &operation.id))?;
+				.map_err(|error| recovery_unknown(error, id))?;
 			let current = client
-				.recovery_get(operation.id.as_str())
-				.map_err(|error| recovery_error(error, &operation.id))?;
+				.recovery_get(id.as_str())
+				.map_err(|error| recovery_unknown(error, id))?;
+			if &current.id != id {
+				return Err(recovery_unknown("the daemon returned a different recovery handle", id));
+			}
 			match current.state {
 				crate::RecoveryState::Done => {
 					*self = client;
-					return current
-						.result
-						.ok_or_else(|| ClientError::Protocol("undo completed without a result".into()));
+					return Ok(current);
 				}
 				crate::RecoveryState::Failed | crate::RecoveryState::Cancelled => {
 					*self = client;
-					return Err(ClientError::Rpc(Box::new(current.error.unwrap_or_else(|| {
-						WireError::new(Code::JobInterrupted, "recovery did not complete")
-					}))));
+					let mut error = current
+						.error
+						.unwrap_or_else(|| WireError::new(Code::JobInterrupted, "recovery did not complete"));
+					error.message = format!("recovery {id}: {}", error.message);
+					return Err(ClientError::Rpc(Box::new(error)));
 				}
 				_ => {
 					drop(client);
@@ -485,10 +519,7 @@ impl ClientError {
 	}
 }
 
-fn recovery_error(error: ClientError, id: &retype_core::job::JobId) -> ClientError {
-	if matches!(error, ClientError::Rpc(_)) {
-		return error;
-	}
+fn recovery_unknown(error: impl std::fmt::Display, id: &JobId) -> ClientError {
 	let mut response = WireError::new(
 		Code::IpcUnavailable,
 		format!("recovery {id}: {error}; inspect `retype recovery {id}` before retrying"),

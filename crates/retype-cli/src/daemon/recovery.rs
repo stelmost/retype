@@ -82,13 +82,14 @@ impl Pool {
 		action: RecoveryAction,
 		task: impl FnOnce(&Cancellation) -> Result<Option<Undone>> + Send + 'static,
 	) -> Result<RecoveryOperation> {
-		self.submit_with_id(JobId::now()?, job, action, task)
+		self.submit_with_id(JobId::now()?, job, Vec::new(), action, task)
 	}
 
 	pub fn submit_with_id(
 		&self,
 		id: JobId,
 		job: JobId,
+		additional_jobs: Vec<JobId>,
 		action: RecoveryAction,
 		task: impl FnOnce(&Cancellation) -> Result<Option<Undone>> + Send + 'static,
 	) -> Result<RecoveryOperation> {
@@ -113,6 +114,7 @@ impl Pool {
 		let operation = RecoveryOperation {
 			id,
 			job,
+			additional_jobs,
 			action,
 			state: RecoveryState::Queued,
 			updated: now_ms(),
@@ -130,21 +132,23 @@ impl Pool {
 	}
 
 	pub fn get(&self, id: &JobId) -> Result<RecoveryOperation> {
+		/* Read while the worker still owns its running slot or after it records the outcome. */
+		let state = self
+			.state
+			.lock()
+			.map_err(|_| std::io::Error::other("recovery queue lock poisoned"))?;
 		let bytes = std::fs::read(self.root.join(format!("{id}.json")))?;
 		let mut operation: RecoveryOperation =
 			serde_json::from_slice(&bytes).map_err(|error| Error::Json(error.to_string()))?;
-		if matches!(operation.state, RecoveryState::Running | RecoveryState::Queued) {
-			let state = self
-				.state
-				.lock()
-				.map_err(|_| std::io::Error::other("recovery queue lock poisoned"))?;
-			if !state.running.contains_key(id) && !state.queue.iter().any(|work| &work.operation.id == id) {
-				operation.state = RecoveryState::Failed;
-				operation.error = Some(WireError::new(
-					Code::JobInterrupted,
-					"recovery outcome could not be durably recorded; inspect retained data before retrying",
-				));
-			}
+		if matches!(operation.state, RecoveryState::Running | RecoveryState::Queued)
+			&& !state.running.contains_key(id)
+			&& !state.queue.iter().any(|work| &work.operation.id == id)
+		{
+			operation.state = RecoveryState::Failed;
+			operation.error = Some(WireError::new(
+				Code::JobInterrupted,
+				"recovery outcome could not be durably recorded; inspect retained data before retrying",
+			));
 		}
 		Ok(operation)
 	}

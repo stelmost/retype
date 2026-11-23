@@ -47,7 +47,7 @@ pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn open_review(state_dir: &Path, id: &JobId) -> Result<()> {
-	Ok(crate::notify::review::open_job(state_dir, id)?)
+	crate::notify::review::open_job(state_dir, id)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

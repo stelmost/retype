@@ -1377,6 +1377,16 @@ impl Server {
 	fn undo(&self, request: &Request) -> Result<Response> {
 		use retype_core::undo::Store;
 
+		if request.params.get("approved").is_some() {
+			#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+			return self.undo_approved(request);
+			#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "Review Undo is unavailable on this platform"),
+			));
+		}
+
 		let store = Store::open(&self.shared.state_dir);
 		let records = store.list()?;
 		let active: std::collections::BTreeSet<String> = self
@@ -1485,6 +1495,7 @@ impl Server {
 		let operation = self.recovery.submit_with_id(
 			operation_id,
 			record.id.clone(),
+			Vec::new(),
 			retype_ipc::RecoveryAction::Undo,
 			move |cancellation| {
 				let restored = store.restore_owned(lease, cancellation)?;
@@ -1494,6 +1505,32 @@ impl Server {
 					consume_source: restored.consume_source,
 					removed: restored.outputs.into_iter().map(|output| output.path).collect(),
 				}))
+			},
+		)?;
+		Ok(Response::ok(request.id, operation)?)
+	}
+
+	#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+	fn undo_approved(&self, request: &Request) -> Result<Response> {
+		use crate::notify::review::ApprovedUndo;
+
+		let retype_ipc::ApprovedUndoRequest { operation_id, approved } = request.parse()?;
+		let store = retype_core::undo::Store::open(&self.shared.state_dir);
+		let batch = ApprovedUndo::prepare(store, approved)?;
+		check_review_jobs(&self.shared, &batch)?;
+		let mut jobs = batch.jobs().cloned();
+		let first = jobs.next().expect("a prepared approval has at least one job");
+		let additional_jobs = jobs.collect();
+		let shared = Arc::clone(&self.shared);
+		let operation = self.recovery.submit_with_id(
+			operation_id,
+			first,
+			additional_jobs,
+			retype_ipc::RecoveryAction::Undo,
+			move |cancellation| {
+				check_review_jobs(&shared, &batch)?;
+				batch.restore(cancellation)?;
+				Ok(None)
 			},
 		)?;
 		Ok(Response::ok(request.id, operation)?)
@@ -1515,6 +1552,8 @@ impl Server {
 				"jobs.list.pagination".to_string(),
 				"undo.list".to_string(),
 				"recovery".to_string(),
+				#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+				"recovery.undo.approved".to_string(),
 				"config.warnings".to_string(),
 			],
 			capabilities: json!({
@@ -1674,6 +1713,24 @@ impl Server {
 
 		Ok(response)
 	}
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn check_review_jobs(shared: &Shared, batch: &crate::notify::review::ApprovedUndo) -> retype_core::error::Result<()> {
+	let jobs = shared
+		.jobs
+		.lock()
+		.map_err(|_| std::io::Error::other("job list lock poisoned"))?;
+	for id in batch.jobs() {
+		if jobs.iter().any(|job| &job.id == id && !job.is_finished()) {
+			return Err(retype_core::error::Diagnostic::global(
+				Code::JobState,
+				format!("{id} is still waiting or running; stop it before undoing it"),
+			)
+			.into());
+		}
+	}
+	Ok(())
 }
 
 pub(super) fn write_response(

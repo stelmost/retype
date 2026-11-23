@@ -64,6 +64,46 @@ mod unix {
 	}
 
 	#[test]
+	fn reviewed_undo_requires_the_daemon_to_check_approvals() {
+		let (client, server) = UnixStream::pair().unwrap();
+		let mut client = Client::from_stream(client);
+		client.daemon = serde_json::from_value(serde_json::json!({
+			"ipc": crate::IPC_VERSION, "pid": 1, "machine": "test", "uptime_ms": 0,
+			"features": ["recovery"], "capabilities": {}
+		}))
+		.unwrap();
+		let error = client.undo_approved(Vec::new()).unwrap_err();
+		assert_eq!(error.code(), Some(&retype_core::error::Code::IpcVersion));
+		drop(client);
+		assert!(read_frame(&mut BufReader::new(server)).unwrap().is_none());
+	}
+
+	#[test]
+	fn a_lost_review_undo_acknowledgement_keeps_the_operation_handle() {
+		let (client, server) = UnixStream::pair().unwrap();
+		server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+		let server = std::thread::spawn(move || {
+			let request = read_frame(&mut BufReader::new(server)).unwrap().unwrap();
+			assert_eq!(request["method"], "recovery.undo");
+			assert!(request["params"]["approved"].is_array());
+			request["params"]["operation_id"].clone()
+		});
+		let mut client = Client::from_stream(client);
+		client.endpoint = Some("unused".into());
+		client.daemon = serde_json::from_value(serde_json::json!({
+			"ipc": crate::IPC_VERSION, "pid": 1, "machine": "test", "uptime_ms": 0,
+			"features": ["recovery", "recovery.undo.approved"], "capabilities": {}
+		}))
+		.unwrap();
+		let ClientError::Rpc(error) = client.undo_approved(Vec::new()).unwrap_err() else {
+			panic!("missing recovery outcome");
+		};
+		let detail = error.detail.unwrap();
+		assert_eq!(detail["recovery"], server.join().unwrap());
+		assert_eq!(detail["outcome"], "unknown");
+	}
+
+	#[test]
 	fn a_lost_submission_acknowledgement_retains_the_client_chosen_handle() {
 		let (client, server) = UnixStream::pair().unwrap();
 		let (send, receive) = mpsc::sync_channel(1);

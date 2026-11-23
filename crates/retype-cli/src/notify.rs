@@ -502,11 +502,11 @@ pub(crate) mod review {
 	use std::fs;
 	use std::io;
 
-	use retype_core::error::{Code, Diagnostic, Result};
+	use retype_core::error::{Code, Diagnostic, Error, Result};
 	use retype_core::execute::Cancellation;
 	use retype_core::job::JobId;
 	use retype_core::safety::Fingerprint;
-	use retype_core::undo::{Link, Record, Store};
+	use retype_core::undo::{JobLease, Link, Record, Store};
 
 	use super::{Message, OutputState, Path, file_name};
 
@@ -521,26 +521,24 @@ pub(crate) mod review {
 		text: String,
 	}
 
-	pub(crate) fn open_job(state_dir: &Path, id: &JobId) -> Result<()> {
+	pub(crate) fn open_job(state_dir: &Path, id: &JobId) -> crate::error::Result<()> {
 		if !dialog::local_desktop() {
-			return Err(Diagnostic::global(Code::Unsupported, "Review needs a local graphical session").into());
+			return Err(Error::from(Diagnostic::global(
+				Code::Unsupported,
+				"Review needs a local graphical session",
+			))
+			.into());
 		}
 		let store = Store::open(state_dir);
 		let message = local_job(state_dir, &store, id)?;
-		show(&store, &message, |text, label| {
+		show(state_dir, store, &message, |text, label| {
 			let approved = dialog::show(&format!("Job {id}\n\n{text}"), label)?;
 			Ok(approved && dialog::local_desktop())
 		})
 	}
 
 	fn local_job(state_dir: &Path, store: &Store, id: &JobId) -> Result<Message> {
-		/* Check existing state without creating it or changing permissions. */
-		match fs::symlink_metadata(state_dir) {
-			Ok(metadata) if private_state(&metadata) => {}
-			Ok(_) => return Err(io::Error::other("Review requires private Retype state").into()),
-			Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(job_not_found()),
-			Err(error) => return Err(error.into()),
-		}
+		check_state(state_dir)?;
 		let job = crate::client::connect(state_dir)
 			.ok()
 			.and_then(|mut client| client.jobs_get(id.as_str()).ok())
@@ -565,8 +563,18 @@ pub(crate) mod review {
 		})
 	}
 
-	fn job_not_found() -> retype_core::error::Error {
+	fn job_not_found() -> Error {
 		Diagnostic::global(Code::JobNotFound, "no local job matches this Review link").into()
+	}
+
+	fn check_state(state_dir: &Path) -> Result<()> {
+		/* Check existing state without creating it or changing permissions. */
+		match fs::symlink_metadata(state_dir) {
+			Ok(metadata) if private_state(&metadata) => Ok(()),
+			Ok(_) => Err(io::Error::other("Review requires private Retype state").into()),
+			Err(error) if error.kind() == io::ErrorKind::NotFound => Err(job_not_found()),
+			Err(error) => Err(error.into()),
+		}
 	}
 
 	fn private_state(metadata: &fs::Metadata) -> bool {
@@ -587,12 +595,17 @@ pub(crate) mod review {
 	}
 
 	#[cfg(target_os = "linux")]
-	pub(super) fn show_batch(message: &Message, state_dir: &Path) -> Result<()> {
-		show(&Store::open(state_dir), message, dialog::show_batch)
+	pub(super) fn show_batch(message: &Message, state_dir: &Path) -> crate::error::Result<()> {
+		show(state_dir, Store::open(state_dir), message, dialog::show_batch)
 	}
 
-	fn show(store: &Store, message: &Message, display: impl Fn(&str, Option<&str>) -> io::Result<bool>) -> Result<()> {
-		let approval = match propose(store, message) {
+	fn show(
+		state_dir: &Path,
+		store: Store,
+		message: &Message,
+		display: impl Fn(&str, Option<&str>) -> io::Result<bool>,
+	) -> crate::error::Result<()> {
+		let approval = match propose(&store, message) {
 			Ok(proposal) => proposal,
 			Err(error) => {
 				eprintln!("retype: cannot review undo records: {error}");
@@ -608,7 +621,7 @@ pub(crate) mod review {
 			count => format!("Undo {count} conversions"),
 		};
 		if display(&proposal.text, Some(&label))?
-			&& let Err(error) = restore(store, &proposal.records)
+			&& let Err(error) = restore(state_dir, store, proposal.records)
 		{
 			eprintln!("retype: cannot undo reviewed conversions: {error}");
 			let message = format!("Retype could not finish Undo.\n\n{}", summary(&error.to_string()));
@@ -630,22 +643,7 @@ pub(crate) mod review {
 			let Some(record) = store.load(id)? else {
 				return Ok(None);
 			};
-			/* Publication intents are not a complete inventory until the record is settled. */
-			if &record.id != id
-				|| record.pinned
-				|| record.undo_progress.is_some()
-				|| record.retention_started.is_none()
-				|| record.link != Link::Copy
-				|| record.commits.is_empty()
-				|| record.commits.len() >= MAX_PATHS
-				|| record.commits.len() != record.outputs.len()
-				|| !record.commits.iter().all(|commit| {
-					commit.output.state == OutputState::Done
-						&& record
-							.outputs
-							.iter()
-							.any(|output| output.path == commit.output.path && output.ext == commit.output.format)
-				}) {
+			if &record.id != id {
 				return Ok(None);
 			}
 			records.push(record);
@@ -662,10 +660,16 @@ pub(crate) mod review {
 	}
 
 	fn review_text(body: &str, records: &[Record]) -> Option<String> {
+		if records.is_empty() || records.len() > MAX_PATHS / 2 {
+			return None;
+		}
 		let mut text = summary(body);
 		text.push_str("\n\nUndo restores missing originals and removes only matching outputs listed below.\n");
 		let mut seen = BTreeSet::new();
 		for record in records {
+			if !reviewable(record) {
+				return None;
+			}
 			text.push('\n');
 			let paths = std::iter::once(("Original", &record.source_path))
 				.chain(record.commits.iter().map(|commit| ("Output", &commit.output.path)));
@@ -681,6 +685,24 @@ pub(crate) mod review {
 			}
 		}
 		Some(text)
+	}
+
+	/* Publication intents are a complete inventory only once the record is settled. */
+	fn reviewable(record: &Record) -> bool {
+		!record.pinned
+			&& record.undo_progress.is_none()
+			&& record.retention_started.is_some()
+			&& record.link == Link::Copy
+			&& !record.commits.is_empty()
+			&& record.commits.len() < MAX_PATHS
+			&& record.commits.len() == record.outputs.len()
+			&& record.commits.iter().all(|commit| {
+				commit.output.state == OutputState::Done
+					&& record
+						.outputs
+						.iter()
+						.any(|output| output.path == commit.output.path && output.ext == commit.output.format)
+			})
 	}
 
 	/* A path must not inject a new line or reorder the review's labels. */
@@ -753,22 +775,113 @@ pub(crate) mod review {
 		}
 	}
 
-	fn restore(store: &Store, records: &[Record]) -> Result<()> {
-		/* Refuse a stale approval for the whole batch before beginning any job's undo. */
-		let leases = records
-			.iter()
-			.map(|record| store.lease(&record.id))
-			.collect::<Result<Vec<_>>>()?;
-		for record in records {
-			if store.load(&record.id)?.as_ref() != Some(record) || !files_eligible(store, record)? {
-				return Err(io::Error::other(format!("{} changed since Review", record.id)).into());
-			}
+	fn restore(state_dir: &Path, store: Store, records: Vec<Record>) -> crate::error::Result<()> {
+		check_state(state_dir)?;
+		#[cfg(windows)]
+		crate::state::ensure_private_directory(state_dir)?;
+		if let Some(mut client) = crate::client::connect_if_running(state_dir)? {
+			return Ok(client.undo_approved(records)?);
 		}
-		for (record, lease) in records.iter().zip(leases) {
-			store.restore_owned(lease, &Cancellation::default())?;
-			eprintln!("retype: undid {}", record.id);
-		}
+
+		let _lock = crate::daemon::Lock::acquire(&state_dir.join("lock"), state_dir)?;
+		ApprovedUndo::prepare(store, records)?.restore(&Cancellation::default())?;
 		Ok(())
+	}
+
+	pub(crate) struct ApprovedUndo {
+		store: Store,
+		members: Vec<(Record, JobLease)>,
+	}
+
+	impl ApprovedUndo {
+		pub(crate) fn prepare(store: Store, records: Vec<Record>) -> Result<Self> {
+			if review_text("", &records).is_none() {
+				return Err(Diagnostic::global(Code::UsageArgs, "expected a complete Review approval").into());
+			}
+			let members = records
+				.into_iter()
+				.map(|record| {
+					let lease = store.lease(&record.id)?;
+					Ok((record, lease))
+				})
+				.collect::<Result<_>>()?;
+			Ok(Self { store, members })
+		}
+
+		pub(crate) fn jobs(&self) -> impl Iterator<Item = &JobId> {
+			self.members.iter().map(|(record, _)| &record.id)
+		}
+
+		pub(crate) fn restore(self, cancellation: &Cancellation) -> Result<()> {
+			/* All exact records and their files must pass preflight before any undo starts. */
+			for (record, _) in &self.members {
+				if self.store.load(&record.id)?.as_ref() != Some(record) || !files_eligible(&self.store, record)? {
+					return Err(
+						Diagnostic::global(Code::JobState, format!("{} changed since Review", record.id)).into(),
+					);
+				}
+			}
+			for (record, lease) in self.members {
+				cancellation.commit(|| Ok(()))?;
+				self.store.restore_owned(lease, cancellation).map_err(|error| {
+					Diagnostic::global(error.code(), format!("could not undo {} ({error})", record.id))
+				})?;
+				eprintln!("retype: undid {}", record.id);
+			}
+			Ok(())
+		}
+	}
+
+	#[cfg(test)]
+	pub(crate) fn retained_conversion(store: &Store, id: JobId, source: &Path) -> Record {
+		use retype_core::job::{Output, Tier};
+		use retype_core::undo::Subject;
+
+		let target = source.with_extension("zip");
+		fs::write(source, b"original").unwrap();
+		store
+			.save(Subject {
+				id: id.clone(),
+				intent: "zip".to_string(),
+				machine: "fixture".to_string(),
+				bytes: source.to_path_buf(),
+				source_path: source.to_path_buf(),
+				source_ext: "tar".to_string(),
+				outputs: vec![retype_core::undo::Output {
+					path: target.clone(),
+					ext: "zip".to_string(),
+				}],
+				consume_source: true,
+			})
+			.unwrap();
+		fs::write(&target, b"converted").unwrap();
+		let mut output = Output::pending(target.clone(), "zip", Tier::Exact);
+		output.state = OutputState::Done;
+		store.prepare_output(&id, output, &target).unwrap();
+		store.finish(&id).unwrap();
+		fs::remove_file(source).unwrap();
+		store.load(&id).unwrap().unwrap()
+	}
+
+	#[cfg(test)]
+	#[test]
+	fn offline_review_undo_requires_the_daemons_lock() {
+		let directory = tempfile::tempdir().unwrap();
+		let state = directory.path().join("state");
+		crate::state::ensure_private_directory(&state).unwrap();
+		let store = Store::open(&state);
+		let record = retained_conversion(&store, JobId::now().unwrap(), &directory.path().join("original.tar"));
+		let lock = crate::daemon::Lock::acquire(&state.join("lock"), &state).unwrap();
+		let error = restore(&state, store, vec![record.clone()]).unwrap_err();
+		assert!(matches!(error, crate::error::Error::AlreadyRunning(_)));
+		assert!(!record.source_path.exists());
+		assert!(record.outputs[0].path.is_file());
+
+		drop(lock);
+		restore(&state, Store::open(&state), vec![record.clone()]).unwrap();
+		assert_eq!(fs::read(record.source_path).unwrap(), b"original");
+		assert!(!record.outputs[0].path.exists());
+		assert!(!state.join(crate::state::ENDPOINT_FILE).exists());
 	}
 
 	#[cfg(test)]

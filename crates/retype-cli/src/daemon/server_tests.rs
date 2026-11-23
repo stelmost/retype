@@ -388,6 +388,121 @@ fn replies_after_undo(server: &mut Server, undo: Request) -> Vec<Response> {
 	responses
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn review_undo_records_the_approved_batch_and_its_durable_result() {
+	use crate::notify::review::retained_conversion;
+	use retype_core::undo::Store;
+	use retype_ipc::{ApprovedUndoRequest, RecoveryOperation, RecoveryState};
+
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let mut daemon = server(&state);
+	let store = Store::open(&state);
+	let first = retained_conversion(&store, JobId::now().unwrap(), &dir.path().join("first.tar"));
+	let second = retained_conversion(&store, JobId::now().unwrap(), &dir.path().join("second.tar"));
+	let id = JobId::now().unwrap();
+	let undo = Request::new(2, "recovery.undo")
+		.with_params(ApprovedUndoRequest {
+			operation_id: id.clone(),
+			approved: vec![first.clone(), second.clone()],
+		})
+		.unwrap();
+	let replies = replies_after_undo(&mut daemon, undo);
+	assert!(
+		replies[0].result.as_ref().unwrap()["features"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|feature| feature == "recovery.undo.approved")
+	);
+	assert!(replies[1].ok, "{:?}", replies[1]);
+	assert!(replies[2].ok);
+	let queued: RecoveryOperation = serde_json::from_value(replies[1].result.clone().unwrap()).unwrap();
+	assert_eq!(queued.id, id);
+	assert_eq!(queued.job, first.id);
+	assert_eq!(queued.additional_jobs, vec![second.id.clone()]);
+	assert_eq!(queued.state, RecoveryState::Queued);
+	for record in [first, second] {
+		assert_eq!(fs::read(record.source_path).unwrap(), b"original");
+		assert!(!record.outputs[0].path.exists());
+		assert!(store.load(&record.id).unwrap().is_none());
+	}
+
+	drop(daemon);
+	let mut restarted = server(&state);
+	let get = Request::new(4, "recovery.get").with_params(json!({"id": id})).unwrap();
+	let response = restarted.answer(&get).unwrap();
+	let completed: RecoveryOperation = serde_json::from_value(response.result.unwrap()).unwrap();
+	assert_eq!(completed.id, id);
+	assert_eq!(completed.state, RecoveryState::Done);
+	assert_eq!(completed.additional_jobs, queued.additional_jobs);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn review_undo_refuses_the_entire_batch_when_a_member_changes() {
+	use crate::notify::review::retained_conversion;
+	use retype_core::undo::Store;
+
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let mut server = server(&state);
+	let store = Store::open(&state);
+	let first = retained_conversion(&store, JobId::now().unwrap(), &dir.path().join("first.tar"));
+	let second = retained_conversion(&store, JobId::now().unwrap(), &dir.path().join("second.tar"));
+	let id = JobId::now().unwrap();
+	store.pin(&second.id).unwrap();
+	let undo = Request::new(2, "recovery.undo")
+		.with_params(retype_ipc::ApprovedUndoRequest {
+			operation_id: id.clone(),
+			approved: vec![first.clone(), second.clone()],
+		})
+		.unwrap();
+
+	let replies = replies_after_undo(&mut server, undo);
+	let error = replies[1].error.as_ref().unwrap();
+	assert_eq!(error.code, Code::JobState);
+	assert!(error.message.contains(second.id.as_str()));
+	assert!(replies[2].ok);
+	for record in [&first, &second] {
+		assert!(!record.source_path.exists());
+		assert_eq!(fs::read(&record.outputs[0].path).unwrap(), b"converted");
+	}
+	assert_eq!(store.load(&first.id).unwrap(), Some(first));
+	assert_eq!(
+		server.recovery.get(&id).unwrap().state,
+		retype_ipc::RecoveryState::Failed
+	);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn review_undo_refuses_a_job_still_waiting_to_run() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let mut daemon = server(&state);
+	let job = parked_job(&daemon, dir.path(), "ask", JobState::NeedsAttention);
+	let store = retype_core::undo::Store::open(&state);
+	let record = crate::notify::review::retained_conversion(&store, job.id, &job.source.path);
+	let id = JobId::now().unwrap();
+	let undo = Request::new(2, "recovery.undo")
+		.with_params(retype_ipc::ApprovedUndoRequest {
+			operation_id: id.clone(),
+			approved: vec![record.clone()],
+		})
+		.unwrap();
+
+	let replies = replies_after_undo(&mut daemon, undo);
+	let error = replies[1].error.as_ref().unwrap();
+	assert_eq!(error.code, Code::JobState);
+	assert!(error.message.contains("still waiting or running"));
+	assert!(daemon.recovery.list().unwrap().iter().all(|operation| operation.id != id));
+	assert!(!record.source_path.exists());
+	assert!(record.outputs[0].path.is_file());
+	assert_eq!(store.load(&record.id).unwrap(), Some(record));
+}
+
 #[test]
 fn a_failed_undo_reports_its_error_and_the_daemon_keeps_serving() {
 	let dir = tempfile::tempdir().unwrap();
