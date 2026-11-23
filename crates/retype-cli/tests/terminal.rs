@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,7 @@ struct Fixture {
 	state: std::path::PathBuf,
 	config: std::path::PathBuf,
 	job: String,
-	watch: Option<Child>,
+	child: Option<Child>,
 	terminal: Option<File>,
 }
 impl Fixture {
@@ -21,8 +22,18 @@ impl Fixture {
 		let state = root.path().join("state");
 		let config = root.path().join("config.toml");
 		fs::write(&config, "version = 'retype-config-1'\n[notify]\nenabled = false\n").unwrap();
-		let source = root.path().join("original.tar");
-		let mut tar = tar::Builder::new(File::create(&source).unwrap());
+		let job = Self::park(&state, &config, &root.path().join("original.tar"));
+		Self {
+			root,
+			state,
+			config,
+			job,
+			child: None,
+			terminal: None,
+		}
+	}
+	fn park(state: &Path, config: &Path, source: &Path) -> String {
+		let mut tar = tar::Builder::new(File::create(source).unwrap());
 		let mut header = tar::Header::new_gnu();
 		header.set_size(7);
 		header.set_mode(0o600);
@@ -35,25 +46,22 @@ impl Fixture {
 			.arg("convert")
 			.arg(source)
 			.args(["zip+ask", "--json", "--state-dir"])
-			.arg(&state)
-			.env("RETYPE_CONFIG", &config)
+			.arg(state)
+			.env("RETYPE_CONFIG", config)
 			.env("RETYPE_TEST_SESSION", "terminal")
 			.stdin(Stdio::null())
 			.output()
 			.unwrap();
 		assert_eq!(output.status.code(), Some(7), "{:?}", output);
 		let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-		let job = answer["error"]["detail"]["id"].as_str().unwrap().to_string();
-		Self {
-			root,
-			state,
-			config,
-			job,
-			watch: None,
-			terminal: None,
-		}
+		answer["error"]["detail"]["id"].as_str().unwrap().to_string()
 	}
 	fn start(&mut self, options: &[&str]) {
+		let mut command = Command::new(env!("CARGO_BIN_EXE_retype"));
+		command.arg("watch").arg(self.root.path()).args(options);
+		self.start_command(command);
+	}
+	fn start_command(&mut self, mut command: Command) {
 		let (mut master, mut slave) = (-1, -1);
 		assert_eq!(
 			unsafe {
@@ -69,11 +77,7 @@ impl Fixture {
 		);
 		let terminal = unsafe { File::from_raw_fd(master) };
 		let slave = unsafe { File::from_raw_fd(slave) };
-		let mut command = Command::new(env!("CARGO_BIN_EXE_retype"));
 		command
-			.arg("watch")
-			.arg(self.root.path())
-			.args(options)
 			.arg("--state-dir")
 			.arg(&self.state)
 			.env("RETYPE_CONFIG", &self.config)
@@ -93,7 +97,7 @@ impl Fixture {
 				Ok(())
 			});
 		}
-		self.watch = Some(command.spawn().unwrap());
+		self.child = Some(command.spawn().unwrap());
 		unsafe {
 			libc::fcntl(terminal.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
 		}
@@ -111,8 +115,8 @@ impl Fixture {
 				other => panic!("terminal failed: {other:?}; {output}"),
 			}
 			assert!(
-				self.watch.as_mut().unwrap().try_wait().unwrap().is_none(),
-				"watch exited: {output}"
+				self.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+				"command exited: {output}"
 			);
 			assert!(Instant::now() < deadline, "prompt did not appear: {output}");
 			std::thread::sleep(Duration::from_millis(20));
@@ -122,7 +126,7 @@ impl Fixture {
 		self.terminal.as_mut().unwrap().write_all(&[3]).unwrap();
 		let deadline = Instant::now() + Duration::from_secs(5);
 		loop {
-			if let Some(status) = self.watch.as_mut().unwrap().try_wait().unwrap() {
+			if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
 				assert!(status.success());
 				break;
 			}
@@ -133,7 +137,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
 	fn drop(&mut self) {
-		if let Some(child) = &mut self.watch {
+		if let Some(child) = &mut self.child {
 			let _ = child.kill();
 			let _ = child.wait();
 		}
@@ -182,7 +186,7 @@ fn terminal_eof_is_not_consent_and_stale_prompt_does_not_resolve_twice() {
 	fixture.terminal.as_mut().unwrap().write_all(b"n\n").unwrap();
 	std::thread::sleep(Duration::from_millis(100));
 	assert!(!fixture.root.path().join("original.zip").exists());
-	assert!(fixture.watch.as_mut().unwrap().try_wait().unwrap().is_none());
+	assert!(fixture.child.as_mut().unwrap().try_wait().unwrap().is_none());
 	fixture.detach();
 }
 
@@ -229,4 +233,25 @@ fn a_stale_parked_decision_cannot_cancel_or_resolve_the_current_job() {
 		Some(&retype_core::error::Code::JobState)
 	);
 	assert_eq!(client.jobs_get(&fixture.job).unwrap(), job);
+}
+
+#[test]
+fn standalone_prompt_refreshes_the_parked_list_after_a_stale_answer() {
+	use retype_core::job::JobState;
+
+	let mut fixture = Fixture::new();
+	let mut command = Command::new(env!("CARGO_BIN_EXE_retype"));
+	command.args(["jobs", "--interactive", "--no-spawn"]);
+	fixture.start_command(command);
+	let second = Fixture::park(&fixture.state, &fixture.config, &fixture.root.path().join("second.tar"));
+	let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+	client.jobs_cancel(&fixture.job).unwrap();
+	drop(client);
+
+	fixture.terminal.as_mut().unwrap().write_all(b"n\n").unwrap();
+	fixture.wait_for_prompt();
+	let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+	assert_eq!(client.jobs_get(&fixture.job).unwrap().state, JobState::Cancelled);
+	assert_eq!(client.jobs_get(&second).unwrap().state, JobState::NeedsAttention);
+	assert!(!fixture.root.path().join("second.zip").exists());
 }

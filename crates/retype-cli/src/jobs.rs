@@ -402,20 +402,24 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 		)));
 	}
 
-	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-	let parked = parked(&mut client)?;
-	drop(client);
+	loop {
+		let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+		let parked = parked(&mut client)?;
+		drop(client);
 
-	if parked.is_empty() {
-		if !json {
-			eprintln!("retype: nothing is parked");
+		if parked.is_empty() {
+			if !json {
+				eprintln!("retype: nothing is parked");
+			}
+			return Ok(ExitCode::SUCCESS);
 		}
-
-		return Ok(ExitCode::SUCCESS);
+		if matches!(
+			interactive_jobs(state_dir, &parked, json, allow_spawn)?,
+			PromptOutcome::Finished
+		) {
+			return Ok(ExitCode::SUCCESS);
+		}
 	}
-
-	interactive_jobs(state_dir, &parked, json, allow_spawn)?;
-	Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) enum PromptOutcome {
