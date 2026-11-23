@@ -174,10 +174,10 @@ impl StagedOutput {
 		#[cfg(feature = "test-checkpoints")]
 		crate::test_checkpoints::checkpoint("publication.renamed", &self.target)?;
 		file.sync_all()?;
-		if let Some(expected) = expected {
-			if !expected.matches(&self.target)? {
-				return Err(changed_staged(&self.target));
-			}
+		if let Some(expected) = expected
+			&& !expected.matches(&self.target)?
+		{
+			return Err(changed_staged(&self.target));
 		}
 		drop(file);
 		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;

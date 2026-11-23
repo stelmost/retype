@@ -568,10 +568,10 @@ impl Job {
 	pub fn set_state(&mut self, state: JobState) {
 		self.state = state;
 		#[cfg(windows)]
-		if !matches!(state, JobState::Queued | JobState::Running) {
-			if let Some(stamp) = &self.admission {
-				stamp.release();
-			}
+		if !matches!(state, JobState::Queued | JobState::Running)
+			&& let Some(stamp) = &self.admission
+		{
+			stamp.release();
 		}
 		self.updated = now_ms();
 	}
