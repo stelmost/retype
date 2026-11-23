@@ -1586,7 +1586,14 @@ mod tests {
 
 		let error = repack(None, Native::Zip, Native::Zip, &tree, &output, &cost()).unwrap_err();
 
-		assert_eq!(error.code(), Code::IoFailed);
+		let expected = if cfg!(windows) {
+			Code::IoPermission
+		} else {
+			Code::IoFailed
+		};
+		assert_eq!(error.code(), expected);
+		assert!(!output.exists());
+		assert_eq!(fs::read(tree.join("one.txt")).unwrap(), b"first");
 	}
 
 	#[test]
