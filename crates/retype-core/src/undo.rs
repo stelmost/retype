@@ -154,10 +154,10 @@ impl Record {
 	}
 
 	fn verify_source_attributes(&self, file: &fs::File) -> Result<()> {
-		if let Some(expected) = &self.source_attributes_sha256 {
-			if expected != &crate::xattr::fingerprint(file)? {
-				return Err(std::io::Error::other("retained original failed its attribute check").into());
-			}
+		if let Some(expected) = &self.source_attributes_sha256
+			&& expected != &crate::xattr::fingerprint(file)?
+		{
+			return Err(std::io::Error::other("retained original failed its attribute check").into());
 		}
 		Ok(())
 	}
@@ -1041,13 +1041,13 @@ impl<'a> UndoStarted<'a> {
 		} else {
 			None
 		};
-		if let Some((path, _file)) = &held {
-			if !source_exists {
-				self.cancellation.commit(|| Ok(()))?;
-				self.store
-					.prepare_restoration(record, path, &self.cancellation)?
-					.publish()?;
-			}
+		if let Some((path, _file)) = &held
+			&& !source_exists
+		{
+			self.cancellation.commit(|| Ok(()))?;
+			self.store
+				.prepare_restoration(record, path, &self.cancellation)?
+				.publish()?;
 		}
 		let mut source = open_undo_source(&record.source_path)?;
 		let before_cleanup =

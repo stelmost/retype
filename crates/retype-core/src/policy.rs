@@ -320,12 +320,11 @@ impl Cache {
 			.and_then(|metadata| metadata.modified())
 			.ok();
 
-		if let Ok(entries) = self.entries.lock() {
-			if let Some((stamp, cached)) = entries.get(&path) {
-				if *stamp == modified {
-					return std::sync::Arc::clone(cached);
-				}
-			}
+		if let Ok(entries) = self.entries.lock()
+			&& let Some((stamp, cached)) = entries.get(&path)
+			&& *stamp == modified
+		{
+			return std::sync::Arc::clone(cached);
 		}
 
 		let cached = std::sync::Arc::new(Policy::at(root, directory).map_err(|error| error.to_string()));

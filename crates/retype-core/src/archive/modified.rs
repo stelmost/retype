@@ -45,7 +45,7 @@ pub(super) fn from_tar<R: std::io::Read>(entry: &mut tar::Entry<'_, R>) -> Resul
 }
 
 fn month_days(year: u16) -> [u64; 12] {
-	let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+	let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
 	[31, 28 + u64::from(leap), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 }
 

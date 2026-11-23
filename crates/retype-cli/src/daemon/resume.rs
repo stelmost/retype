@@ -127,20 +127,18 @@ fn run_cancellable(
 		let stopped = output_gate.skipped();
 
 		// Once stopped, retain verified prior outputs even if this resume requested replacement.
-		if !force || stopped.is_some() {
-			if let Some(recorded) = recorded {
-				if still_produced(recorded)
-					&& ledger.commits.iter().any(|commit| {
-						commit.output.path == recorded.path
-							&& commit
-								.fingerprint
-								.matches_cancellable(&recorded.path, cancellation)
-								.unwrap_or(false)
-					}) {
-					outputs.push(recorded.clone());
-					continue;
-				}
-			}
+		if (!force || stopped.is_some())
+			&& let Some(recorded) = recorded
+			&& still_produced(recorded)
+			&& ledger.commits.iter().any(|commit| {
+				commit.output.path == recorded.path
+					&& commit
+						.fingerprint
+						.matches_cancellable(&recorded.path, cancellation)
+						.unwrap_or(false)
+			}) {
+			outputs.push(recorded.clone());
+			continue;
 		}
 
 		let path = recorded

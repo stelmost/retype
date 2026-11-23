@@ -350,16 +350,16 @@ fn plan_group(
 ) -> Result<Plan, Vec<Error>> {
 	// The other direction of the same rule: a format with no writer cannot be a
 	// target, whatever the backend claims.
-	if let Some(format) = registry.format(&group.format) {
-		if !format.direction.can_encode() {
-			return Err(vec![Error::Diagnostic(Diagnostic::global(
-				Code::Unsupported,
-				format!(
-					"{} is read but not written, so it cannot be the target of a conversion",
-					group.format
-				),
-			))]);
-		}
+	if let Some(format) = registry.format(&group.format)
+		&& !format.direction.can_encode()
+	{
+		return Err(vec![Error::Diagnostic(Diagnostic::global(
+			Code::Unsupported,
+			format!(
+				"{} is read but not written, so it cannot be the target of a conversion",
+				group.format
+			),
+		))]);
 	}
 
 	let pipeline = group.pipeline();

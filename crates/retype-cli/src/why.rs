@@ -81,10 +81,12 @@ pub fn run(
 		line("tier", &tier);
 	}
 
-	if let Some(claim) = answer.get("claim") {
-		if let Some(state) = claim.get("state").and_then(Value::as_str) {
-			line("claim", state);
-		}
+	if let Some(state) = answer
+		.get("claim")
+		.and_then(|claim| claim.get("state"))
+		.and_then(Value::as_str)
+	{
+		line("claim", state);
 	}
 
 	if let Some(bytes) = answer.get("bytes").and_then(Value::as_u64) {

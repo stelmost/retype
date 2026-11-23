@@ -75,16 +75,16 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 	// A format that is written and never read cannot start a conversion, and
 	// saying so before anything is planned is the difference between "not
 	// supported" and "this tool failed", `docs/tools.md` §1.
-	if let Some(format) = registry.format(source.format) {
-		if !format.direction.can_decode() {
-			problems.push(Error::Diagnostic(crate::error::Diagnostic::global(
-				Code::Unsupported,
-				format!(
-					"{} is written but not read, so it cannot be the source of a conversion",
-					source.format
-				),
-			)));
-		}
+	if let Some(format) = registry.format(source.format)
+		&& !format.direction.can_decode()
+	{
+		problems.push(Error::Diagnostic(crate::error::Diagnostic::global(
+			Code::Unsupported,
+			format!(
+				"{} is written but not read, so it cannot be the source of a conversion",
+				source.format
+			),
+		)));
 	}
 	let mut groups = Vec::new();
 	let mut meta = intent.meta;
@@ -424,10 +424,8 @@ fn desugar(token: &Token) -> Token {
 		return replaced(token, "size", &lower);
 	}
 
-	if let Some(digits) = lower.strip_suffix('p') {
-		if is_number(digits) {
-			return replaced(token, "cap", digits);
-		}
+	if let Some(digits) = lower.strip_suffix('p').filter(|digits| is_number(digits)) {
+		return replaced(token, "cap", digits);
 	}
 
 	token.clone()
@@ -456,10 +454,10 @@ fn unknown_name(token: &Token, registry: &Registry) -> Error {
 		token.name_span,
 	);
 
-	if let Error::Diagnostic(diagnostic) = &mut error {
-		if let Some(suggestion) = closest(&token.name, registry.names()) {
-			diagnostic.hint = Some(format!("did you mean '{suggestion}'?"));
-		}
+	if let Error::Diagnostic(diagnostic) = &mut error
+		&& let Some(suggestion) = closest(&token.name, registry.names())
+	{
+		diagnostic.hint = Some(format!("did you mean '{suggestion}'?"));
 	}
 
 	error

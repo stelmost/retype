@@ -38,12 +38,13 @@ fn has_named_stream(mut bytes: &[u8]) -> Option<bool> {
 		let next = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
 		let length = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
 		let end = HEADER_BYTES.checked_add(length)?;
-		if length % 2 != 0 || (next != 0 && next < end) {
+		if !length.is_multiple_of(2) || (next != 0 && next < end) {
 			return None;
 		}
 		let name = bytes.get(HEADER_BYTES..end)?.strip_prefix(COLON)?.strip_suffix(DATA)?;
 		if !name.is_empty() {
-			return name.chunks_exact(2).all(|unit| unit != [0, 0]).then_some(true);
+			let (units, _) = name.as_chunks::<2>();
+			return units.iter().all(|unit| *unit != [0, 0]).then_some(true);
 		}
 		if saw_unnamed {
 			return None;

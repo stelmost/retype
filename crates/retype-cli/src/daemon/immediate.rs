@@ -163,17 +163,17 @@ fn validate(request: &Request, paths: &[PathBuf]) -> std::result::Result<(), Dia
 			continue;
 		}
 
-		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-			if !parent.is_dir() {
-				problems.push(Error::Diagnostic(Diagnostic::global(
-					Code::IoNotFound,
-					format!(
-						"{} is not a directory, so {} cannot be written",
-						parent.display(),
-						path.display()
-					),
-				)));
-			}
+		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+			&& !parent.is_dir()
+		{
+			problems.push(Error::Diagnostic(Diagnostic::global(
+				Code::IoNotFound,
+				format!(
+					"{} is not a directory, so {} cannot be written",
+					parent.display(),
+					path.display()
+				),
+			)));
 		}
 
 		if path.is_dir() {
@@ -357,16 +357,16 @@ pub(super) fn run_matching(
 			return;
 		}
 	};
-	if let Some(stamp) = &preparing.admission {
-		if let Err(error) = stamp.verify_captured(&request.input, &snapshot.original, cancellation) {
-			if cancellation.is_cancelled() {
-				preparing.set_state(JobState::Cancelled);
-			} else {
-				preparing.fail(JobError::new(error.code().to_string(), error.to_string()));
-			}
-			publish(shared, &preparing);
-			return;
+	if let Some(stamp) = &preparing.admission
+		&& let Err(error) = stamp.verify_captured(&request.input, &snapshot.original, cancellation)
+	{
+		if cancellation.is_cancelled() {
+			preparing.set_state(JobState::Cancelled);
+		} else {
+			preparing.fail(JobError::new(error.code().to_string(), error.to_string()));
 		}
+		publish(shared, &preparing);
+		return;
 	}
 	let mut started = queued(shared, &registry, &prepared, id);
 	started.admission = preparing.admission;
@@ -461,16 +461,16 @@ pub(super) fn run_matching(
 		return;
 	}
 
-	if let Ok(Some(record)) = &undo_record {
-		if record.source_fingerprint.as_ref() != Some(&snapshot.original) {
-			let mut failed = queued(shared, &registry, &prepared, id);
-			failed.fail(JobError::new(
-				Code::IoFailed.to_string(),
-				"input changed while its recovery copy was prepared",
-			));
-			publish(shared, &failed);
-			return;
-		}
+	if let Ok(Some(record)) = &undo_record
+		&& record.source_fingerprint.as_ref() != Some(&snapshot.original)
+	{
+		let mut failed = queued(shared, &registry, &prepared, id);
+		failed.fail(JobError::new(
+			Code::IoFailed.to_string(),
+			"input changed while its recovery copy was prepared",
+		));
+		publish(shared, &failed);
+		return;
 	}
 	let recovery = match store.retain(lease, undo_record.expect("backup errors handled above")) {
 		Ok(recovery) => recovery,

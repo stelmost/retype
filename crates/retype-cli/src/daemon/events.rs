@@ -51,10 +51,8 @@ impl Events {
 			.front()
 			.and_then(|event| event.get("seq").and_then(Value::as_u64));
 
-		if let Some(oldest) = oldest {
-			if since.saturating_add(1) < oldest {
-				return None;
-			}
+		if oldest.is_some_and(|oldest| since.saturating_add(1) < oldest) {
+			return None;
 		}
 
 		let mut events = Vec::new();

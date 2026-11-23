@@ -17,10 +17,10 @@ use std::path::Path;
 /// Answers with the name to print rather than a boolean, because "refused" without
 /// "because iCloud" is a message the user cannot act on.
 pub fn provider(path: &Path) -> Option<String> {
-	if let Some(home) = home() {
-		if let Some(name) = cloud_storage(path, &home) {
-			return Some(name);
-		}
+	if let Some(home) = home()
+		&& let Some(name) = cloud_storage(path, &home)
+	{
+		return Some(name);
 	}
 
 	#[cfg(target_os = "linux")]

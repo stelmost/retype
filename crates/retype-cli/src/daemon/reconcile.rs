@@ -220,13 +220,12 @@ fn interrupted(shared: &Shared, job: &Job, cancellation: &retype_core::execute::
 				.iter()
 				.map(|planned| {
 					let committed = record.commits.iter().find(|commit| commit.output.path == planned.path);
-					if let Some(commit) = committed {
-						if matches!(
+					if let Some(commit) = committed
+						&& matches!(
 							commit.fingerprint.matches_cancellable(&planned.path, cancellation),
 							Ok(true)
 						) {
-							return commit.output.clone();
-						}
+						return commit.output.clone();
 					}
 					retype_core::job::Output::pending(
 						planned.path.clone(),

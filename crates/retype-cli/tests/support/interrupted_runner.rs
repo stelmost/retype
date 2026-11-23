@@ -147,12 +147,11 @@ impl Drop for Worker {
 		if self.stopped {
 			return;
 		}
-		if self.tool_pid.is_some() {
-			if let Err(error) = self.kill_tool() {
-				if error.raw_os_error() != Some(libc::ESRCH) {
-					eprintln!("could not stop interrupted test tool: {error}");
-				}
-			}
+		if self.tool_pid.is_some()
+			&& let Err(error) = self.kill_tool()
+			&& error.raw_os_error() != Some(libc::ESRCH)
+		{
+			eprintln!("could not stop interrupted test tool: {error}");
 		}
 		/* Closing the peer also releases a tool whose PID was never received. */
 		self.control.take();

@@ -49,10 +49,10 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		}
 	};
 
-	if request.dry_run {
-		if let Err(code) = check_source(&source) {
-			return Ok(ExitCode::from(code));
-		}
+	if request.dry_run
+		&& let Err(code) = check_source(&source)
+	{
+		return Ok(ExitCode::from(code));
 	}
 
 	let parsed = match intent::parse(request.intent) {
@@ -87,13 +87,13 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	let installed = failure.is_none();
 	let manifest = retype_core::fidelity::open_for(request.state_dir)?;
 	retype_core::fidelity::qualify(&manifest, registry, &source.format, &mut plans);
-	if failure.is_none() {
-		if let Some(error) = plans.iter().find_map(|plan| retype_core::fidelity::check(plan).err()) {
-			if !request.json {
-				eprintln!("retype: {}: {error}", error.code());
-			}
-			failure = Some(error.code());
+	if failure.is_none()
+		&& let Some(error) = plans.iter().find_map(|plan| retype_core::fidelity::check(plan).err())
+	{
+		if !request.json {
+			eprintln!("retype: {}: {error}", error.code());
 		}
+		failure = Some(error.code());
 	}
 
 	let source_name = source.original_name();

@@ -123,10 +123,10 @@ fn comparable(directory: &Path) -> Result<PathBuf> {
 		return Ok(canonical);
 	}
 
-	if let (Some(parent), Some(name)) = (directory.parent(), directory.file_name()) {
-		if let Ok(parent) = std::fs::canonicalize(parent) {
-			return Ok(parent.join(name));
-		}
+	if let (Some(parent), Some(name)) = (directory.parent(), directory.file_name())
+		&& let Ok(parent) = std::fs::canonicalize(parent)
+	{
+		return Ok(parent.join(name));
 	}
 
 	Ok(std::path::absolute(directory)?)

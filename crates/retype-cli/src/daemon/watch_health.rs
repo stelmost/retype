@@ -39,18 +39,18 @@ impl Root {
 	}
 
 	pub fn ready(&self) {
-		if let Ok(mut phase) = self.phase.lock() {
-			if *phase == Phase::Starting {
-				*phase = Phase::Ready;
-			}
+		if let Ok(mut phase) = self.phase.lock()
+			&& *phase == Phase::Starting
+		{
+			*phase = Phase::Ready;
 		}
 	}
 
 	pub fn degraded(&self, message: impl Into<String>) {
-		if let Ok(mut phase) = self.phase.lock() {
-			if !matches!(*phase, Phase::Failed(_) | Phase::Stopping) {
-				*phase = Phase::Degraded(message.into());
-			}
+		if let Ok(mut phase) = self.phase.lock()
+			&& !matches!(*phase, Phase::Failed(_) | Phase::Stopping)
+		{
+			*phase = Phase::Degraded(message.into());
 		}
 	}
 

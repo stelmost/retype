@@ -18,12 +18,11 @@ struct Process(Child);
 
 impl Drop for Process {
 	fn drop(&mut self) {
-		if !matches!(self.0.try_wait(), Ok(Some(_))) {
-			if let Err(error) = self.0.kill() {
-				if !matches!(self.0.try_wait(), Ok(Some(_))) {
-					eprintln!("could not stop test process: {error}");
-				}
-			}
+		if !matches!(self.0.try_wait(), Ok(Some(_)))
+			&& let Err(error) = self.0.kill()
+			&& !matches!(self.0.try_wait(), Ok(Some(_)))
+		{
+			eprintln!("could not stop test process: {error}");
 		}
 		if let Err(error) = self.0.wait() {
 			eprintln!("could not reap test process: {error}");

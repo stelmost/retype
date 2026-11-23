@@ -135,13 +135,13 @@ pub struct Report {
 impl Report {
 	/// Refuse publication if the checked file has changed since validation.
 	pub fn verify_staged(&self, staged: &Path) -> Result<()> {
-		if let Some(expected) = self.validation.fingerprint() {
-			if !expected.matches(staged)? {
-				return Err(Error::Io(std::io::Error::other(format!(
-					"{} changed after output validation; original retained",
-					staged.display()
-				))));
-			}
+		if let Some(expected) = self.validation.fingerprint()
+			&& !expected.matches(staged)?
+		{
+			return Err(Error::Io(std::io::Error::other(format!(
+				"{} changed after output validation; original retained",
+				staged.display()
+			))));
 		}
 		Ok(())
 	}

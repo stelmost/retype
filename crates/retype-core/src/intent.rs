@@ -341,17 +341,19 @@ fn is_alias_form(text: &str) -> bool {
 		return true;
 	}
 
-	if let Some(digits) = lower.strip_suffix('p') {
-		if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-			return true;
-		}
+	if let Some(digits) = lower.strip_suffix('p')
+		&& !digits.is_empty()
+		&& digits.bytes().all(|byte| byte.is_ascii_digit())
+	{
+		return true;
 	}
 
 	for unit in ["kb", "mb", "gb"] {
-		if let Some(digits) = lower.strip_suffix(unit) {
-			if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
-				return true;
-			}
+		if let Some(digits) = lower.strip_suffix(unit)
+			&& !digits.is_empty()
+			&& digits.bytes().all(|byte| byte.is_ascii_digit())
+		{
+			return true;
 		}
 	}
 

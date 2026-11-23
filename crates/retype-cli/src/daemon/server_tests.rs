@@ -24,13 +24,13 @@ impl TestServer {
 	fn cancel(&self, request: &Request) -> Result<Response> {
 		let mut response = self.0.cancel(request)?;
 		self.recovery.wait();
-		if let Some(value) = &mut response.result {
-			if let Some(id) = request.params.get("id").and_then(|value| value.as_str()) {
-				value["warning"] = self
-					.find(id)
-					.and_then(|job| job.error)
-					.map_or(serde_json::Value::Null, |error| json!(error.message));
-			}
+		if let Some(value) = &mut response.result
+			&& let Some(id) = request.params.get("id").and_then(|value| value.as_str())
+		{
+			value["warning"] = self
+				.find(id)
+				.and_then(|job| job.error)
+				.map_or(serde_json::Value::Null, |error| json!(error.message));
 		}
 		Ok(response)
 	}
@@ -497,7 +497,14 @@ fn review_undo_refuses_a_job_still_waiting_to_run() {
 	let error = replies[1].error.as_ref().unwrap();
 	assert_eq!(error.code, Code::JobState);
 	assert!(error.message.contains("still waiting or running"));
-	assert!(daemon.recovery.list().unwrap().iter().all(|operation| operation.id != id));
+	assert!(
+		daemon
+			.recovery
+			.list()
+			.unwrap()
+			.iter()
+			.all(|operation| operation.id != id)
+	);
 	assert!(!record.source_path.exists());
 	assert!(record.outputs[0].path.is_file());
 	assert_eq!(store.load(&record.id).unwrap(), Some(record));

@@ -499,13 +499,13 @@ impl Server {
 
 		// The only mode that exists so far. A rename is queued by the watcher
 		// rather than by a client, so there is nothing else to name yet.
-		if let Some(mode) = request.params.get("mode").and_then(|mode| mode.as_str()) {
-			if mode != "immediate" {
-				return Ok(Response::error(
-					request.id,
-					WireError::new(Code::IpcMethod, format!("'{mode}' is not a mode this daemon runs")),
-				));
-			}
+		if let Some(mode) = request.params.get("mode").and_then(|mode| mode.as_str())
+			&& mode != "immediate"
+		{
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, format!("'{mode}' is not a mode this daemon runs")),
+			));
 		}
 
 		let asked = Convert {
@@ -929,19 +929,17 @@ impl Server {
 			.and_then(serde_json::Value::as_bool)
 			.unwrap_or(false);
 
-		if !force {
-			if let Some(supervisor) = self.supervisor {
-				return Ok(Response::error(
-					request.id,
-					WireError::new(
-						Code::IpcSupervised,
-						format!(
-							"this daemon was started by {supervisor}, which would start it again; \
-							 stop the {supervisor} unit, or pass --force"
-						),
+		if !force && let Some(supervisor) = self.supervisor {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::IpcSupervised,
+					format!(
+						"this daemon was started by {supervisor}, which would start it again; \
+						 stop the {supervisor} unit, or pass --force"
 					),
-				));
-			}
+				),
+			));
 		}
 
 		let cancelled = self.stop(now);
@@ -1186,10 +1184,10 @@ impl Server {
 		policy_error: Option<&retype_core::error::Error>,
 	) -> (&'static str, Option<String>) {
 		use super::watch_health::Phase;
-		if let Ok(session) = self.shared.session.lock() {
-			if !session.watching {
-				return ("inactive", session.reason.clone());
-			}
+		if let Ok(session) = self.shared.session.lock()
+			&& !session.watching
+		{
+			return ("inactive", session.reason.clone());
 		}
 
 		let phase = self
@@ -1268,19 +1266,20 @@ impl Server {
 			));
 		}
 
-		if paused.is_none() && !self.shared.registry().watch().allow_synced {
-			if let Some(provider) = retype_core::synced::provider(directory) {
-				return Ok(Response::error(
-					request.id,
-					WireError::new(
-						Code::UsageArgs,
-						format!(
-							"{path} is inside {provider}, which can hold placeholders instead of files; \
-							 [watch] allow_synced = true overrides this"
-						),
+		if paused.is_none()
+			&& !self.shared.registry().watch().allow_synced
+			&& let Some(provider) = retype_core::synced::provider(directory)
+		{
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::UsageArgs,
+					format!(
+						"{path} is inside {provider}, which can hold placeholders instead of files; \
+						 [watch] allow_synced = true overrides this"
 					),
-				));
-			}
+				),
+			));
 		}
 
 		let registration = match paused {

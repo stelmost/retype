@@ -24,10 +24,8 @@ pub(super) fn check(file: &mut File, archive: &zip::ZipArchive<File>, cancellati
 				}
 				let mut header = [0; 42];
 				file.read_exact(&mut header)?;
-				let fields = header[24..30].chunks_exact(2);
-				let skip: i64 = fields
-					.map(|field| i64::from(u16::from_le_bytes([field[0], field[1]])))
-					.sum();
+				let (fields, _) = header[24..30].as_chunks::<2>();
+				let skip: i64 = fields.iter().map(|&field| i64::from(u16::from_le_bytes(field))).sum();
 				file.seek(SeekFrom::Current(skip))?;
 			}
 			/* End of directory, with or without ZIP64 records or a directory signature. */

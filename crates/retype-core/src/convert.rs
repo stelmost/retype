@@ -195,10 +195,10 @@ impl StagedOutput {
 		if !fs::symlink_metadata(&self.temp)?.file_type().is_file() {
 			return Err(Error::Io(std::io::Error::other("staged output is not a regular file")));
 		}
-		if let Some(expected) = expected {
-			if !expected.matches(&self.temp)? {
-				return Err(changed_staged(&self.temp));
-			}
+		if let Some(expected) = expected
+			&& !expected.matches(&self.temp)?
+		{
+			return Err(changed_staged(&self.temp));
 		}
 		crate::fsx::sync_file(&self.temp)?;
 		crate::fsx::sync_directory(self._directory.path())?;
@@ -215,10 +215,10 @@ impl StagedOutput {
 		#[cfg(feature = "test-checkpoints")]
 		crate::test_checkpoints::checkpoint("publication.renamed", &self.target)?;
 		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
-		if let Some(expected) = expected {
-			if !expected.matches(&self.target)? {
-				return Err(changed_staged(&self.target));
-			}
+		if let Some(expected) = expected
+			&& !expected.matches(&self.target)?
+		{
+			return Err(changed_staged(&self.target));
 		}
 		#[cfg(test)]
 		crate::durability_tests::publication_checkpoint("publication.durable", &self.target)?;

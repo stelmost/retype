@@ -400,10 +400,10 @@ fn invalidate_moved_directories(correlator: &mut Correlator, batch: &Batch) {
 		// unknowable without an identity. `From` is enough to invalidate the name
 		// that just left, which is what a later identity lookup would otherwise
 		// still hold.
-		if matches!(kind, RenameMode::From) {
-			if let Some(source) = event.paths.first() {
-				correlator.invalidate_prefix(source);
-			}
+		if matches!(kind, RenameMode::From)
+			&& let Some(source) = event.paths.first()
+		{
+			correlator.invalidate_prefix(source);
 		}
 	}
 }

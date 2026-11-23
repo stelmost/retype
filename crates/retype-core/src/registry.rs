@@ -556,13 +556,13 @@ impl Registry {
 			}
 
 			if let Some(param) = &op.param {
-				if let (Some(min), Some(max)) = (param.min, param.max) {
-					if min > max {
-						problems.push(fail(
-							Code::CfgValidation,
-							format!("{label}: operation '{key}' declares min {min} above max {max}"),
-						));
-					}
+				if let (Some(min), Some(max)) = (param.min, param.max)
+					&& min > max
+				{
+					problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: operation '{key}' declares min {min} above max {max}"),
+					));
 				}
 				if param.class == Class::Enum && param.values.is_empty() && op.is_implemented() {
 					problems.push(fail(
@@ -708,10 +708,8 @@ impl Registry {
 
 		let mut provenance = crate::provenance::Policy::default();
 
-		if let Some(entry) = &document.provenance {
-			if let Some(xattr) = entry.xattr {
-				provenance.xattr = xattr;
-			}
+		if let Some(xattr) = document.provenance.as_ref().and_then(|entry| entry.xattr) {
+			provenance.xattr = xattr;
 		}
 
 		let mut deferral = crate::deferral::Policy::default();
@@ -1108,10 +1106,10 @@ impl Registry {
 				continue;
 			};
 
-			if let Some(Target::Preset(next)) = self.resolve(&token.name).map(|found| found.target) {
-				if let Some(cycle) = self.preset_cycle(&next.key, path) {
-					return Some(cycle);
-				}
+			if let Some(Target::Preset(next)) = self.resolve(&token.name).map(|found| found.target)
+				&& let Some(cycle) = self.preset_cycle(&next.key, path)
+			{
+				return Some(cycle);
 			}
 		}
 

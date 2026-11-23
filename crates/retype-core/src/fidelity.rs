@@ -265,34 +265,35 @@ pub fn qualify_cancellable(
 
 /// Refuse a stale exact promise before execution or output publication.
 pub fn check(plan: &crate::plan::Plan) -> Result<()> {
-	if let Some(evidence) = &plan.fidelity {
-		if plan.tier == Tier::Exact && evidence.state == State::Unverified {
-			let Some(claim) = &evidence.claim else {
-				return Err(Diagnostic::global(Code::Unsupported, "exact output has no verified claim").into());
-			};
-			return Err(Diagnostic::global(
-				Code::Unsupported,
-				format!(
-					"{} to {}: exact claim for {} is stale; recorded version {} fingerprint {}, \
-					 installed version {} fingerprint {}; engine {:?}: recorded {} {}, installed {} {}; \
-					 rerun fidelity or relax [formats.{}] tier",
-					claim.source,
-					claim.target,
-					claim.backend,
-					claim.version,
-					claim.fingerprint,
-					evidence.version,
-					evidence.fingerprint,
-					claim.engine,
-					claim.engine_version,
-					claim.engine_fingerprint,
-					evidence.engine_version,
-					evidence.engine_fingerprint,
-					plan.format,
-				),
-			)
-			.into());
-		}
+	if let Some(evidence) = &plan.fidelity
+		&& plan.tier == Tier::Exact
+		&& evidence.state == State::Unverified
+	{
+		let Some(claim) = &evidence.claim else {
+			return Err(Diagnostic::global(Code::Unsupported, "exact output has no verified claim").into());
+		};
+		return Err(Diagnostic::global(
+			Code::Unsupported,
+			format!(
+				"{} to {}: exact claim for {} is stale; recorded version {} fingerprint {}, \
+				 installed version {} fingerprint {}; engine {:?}: recorded {} {}, installed {} {}; \
+				 rerun fidelity or relax [formats.{}] tier",
+				claim.source,
+				claim.target,
+				claim.backend,
+				claim.version,
+				claim.fingerprint,
+				evidence.version,
+				evidence.fingerprint,
+				claim.engine,
+				claim.engine_version,
+				claim.engine_fingerprint,
+				evidence.engine_version,
+				evidence.engine_fingerprint,
+				plan.format,
+			),
+		)
+		.into());
 	}
 	Ok(())
 }

@@ -46,10 +46,8 @@ impl Daemon {
 			return Ok(Self::at(path));
 		}
 
-		if let Some(configured) = std::env::var_os("RETYPE_DAEMON") {
-			if !configured.is_empty() {
-				return Ok(Self::at(PathBuf::from(configured)));
-			}
+		if let Some(configured) = std::env::var_os("RETYPE_DAEMON").filter(|path| !path.is_empty()) {
+			return Ok(Self::at(PathBuf::from(configured)));
 		}
 
 		Self::current_exe()

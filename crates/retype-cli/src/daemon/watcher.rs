@@ -2056,10 +2056,10 @@ fn record_job(
 	drop(jobs);
 
 	// The last job of a batch is the one that speaks for it.
-	if is_settled(job.state) {
-		if let Some(ids) = shared.batches.finish(&job.id) {
-			announce(shared, &ids);
-		}
+	if is_settled(job.state)
+		&& let Some(ids) = shared.batches.finish(&job.id)
+	{
+		announce(shared, &ids);
 	}
 	Ok(())
 }

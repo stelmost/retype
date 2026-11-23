@@ -76,10 +76,10 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	};
 
 	let id = submitted.id.as_str().to_string();
-	if submitted.state == JobState::NeedsAttention {
-		if let Some(exit) = confirm_or_report(request, &id)? {
-			return Ok(exit);
-		}
+	if submitted.state == JobState::NeedsAttention
+		&& let Some(exit) = confirm_or_report(request, &id)?
+	{
+		return Ok(exit);
 	}
 
 	crate::verbose::note(format!("submitted {id} for {input}", input = request.input));
@@ -129,10 +129,11 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		return Ok(ExitCode::SUCCESS);
 	}
 
-	if !request.quiet && output::job_failure(&job).is_none() {
-		if let Some(warning) = output::source_disposition_warning(&job) {
-			eprintln!("retype: {warning}");
-		}
+	if !request.quiet
+		&& output::job_failure(&job).is_none()
+		&& let Some(warning) = output::source_disposition_warning(&job)
+	{
+		eprintln!("retype: {warning}");
 	}
 
 	let mut failure: Option<u8> = None;
@@ -176,11 +177,11 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		failure = Some(exit_code_of(&error.code));
 	}
 
-	if failure.is_none() {
-		if let Some((code, message)) = output::job_failure(&job) {
-			eprintln!("retype: {code}: {message}");
-			failure = Some(exit_code_of(code.as_str()));
-		}
+	if failure.is_none()
+		&& let Some((code, message)) = output::job_failure(&job)
+	{
+		eprintln!("retype: {code}: {message}");
+		failure = Some(exit_code_of(code.as_str()));
 	}
 
 	match failure {

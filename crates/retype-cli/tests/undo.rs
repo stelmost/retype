@@ -76,10 +76,10 @@ fn archive_bytes() -> Vec<u8> {
 fn assert_daemon_reachable(state: &Path) {
 	let deadline = Instant::now() + Duration::from_secs(3);
 	loop {
-		if let Ok(mut client) = retype_cli::client::connect(state) {
-			if client.status().is_ok() {
-				return;
-			}
+		if let Ok(mut client) = retype_cli::client::connect(state)
+			&& client.status().is_ok()
+		{
+			return;
 		}
 		assert!(Instant::now() < deadline, "the daemon stopped after refusing undo");
 		std::thread::sleep(Duration::from_millis(25));
@@ -199,12 +199,12 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	loop {
 		let records = fs::read_to_string(&journal).unwrap_or_default();
 		let finished = store.list().unwrap().into_iter().find(|record| !record.pinned);
-		if let Some(record) = finished {
-			if let Ok(lease) = store.lease(&record.id) {
-				drop(lease);
-				assert!(records.contains("\"state\":\"queued\""), "{records}");
-				break;
-			}
+		if let Some(record) = finished
+			&& let Ok(lease) = store.lease(&record.id)
+		{
+			drop(lease);
+			assert!(records.contains("\"state\":\"queued\""), "{records}");
+			break;
 		}
 		assert!(Instant::now() < deadline, "the archive was not converted: {records}");
 		std::thread::sleep(Duration::from_millis(50));
@@ -333,11 +333,11 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 	loop {
 		let recorded = fs::read_to_string(&journal).unwrap_or_default();
 		let finished = store.list().unwrap().into_iter().find(|record| !record.pinned);
-		if let Some(record) = finished {
-			if let Ok(lease) = store.lease(&record.id) {
-				drop(lease);
-				break;
-			}
+		if let Some(record) = finished
+			&& let Ok(lease) = store.lease(&record.id)
+		{
+			drop(lease);
+			break;
 		}
 
 		assert!(Instant::now() < deadline, "the rename was not settled: {recorded}");

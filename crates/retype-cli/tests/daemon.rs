@@ -40,10 +40,10 @@ impl Daemon {
 
 impl Drop for Daemon {
 	fn drop(&mut self) {
-		if let Ok(mut client) = retype_ipc::Client::connect(&self.socket) {
-			if client.hello("test-cleanup").is_ok() {
-				let _ = client.call_without_params("shutdown");
-			}
+		if let Ok(mut client) = retype_ipc::Client::connect(&self.socket)
+			&& client.hello("test-cleanup").is_ok()
+		{
+			let _ = client.call_without_params("shutdown");
 		}
 		if let Some(handle) = self.handle.take() {
 			let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);

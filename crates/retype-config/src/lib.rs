@@ -89,10 +89,8 @@ pub fn user_path(explicit: Option<&Path>) -> Option<PathBuf> {
 		return Some(path.to_path_buf());
 	}
 
-	if let Some(configured) = std::env::var_os("RETYPE_CONFIG") {
-		if !configured.is_empty() {
-			return Some(PathBuf::from(configured));
-		}
+	if let Some(configured) = std::env::var_os("RETYPE_CONFIG").filter(|path| !path.is_empty()) {
+		return Some(PathBuf::from(configured));
 	}
 
 	default_path()

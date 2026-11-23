@@ -67,22 +67,16 @@ pub fn list(
 			.unwrap_or_default();
 		let job_id = job.id.as_str();
 
-		if let Some(since) = &since {
-			if job_id <= since.as_str() {
-				continue;
-			}
+		if since.as_ref().is_some_and(|since| job_id <= since.as_str()) {
+			continue;
 		}
 
-		if let Some(wanted) = state.as_deref() {
-			if job_state != wanted {
-				continue;
-			}
+		if state.as_deref().is_some_and(|wanted| job_state != wanted) {
+			continue;
 		}
 
-		if let Some(limit) = limit {
-			if shown >= limit {
-				break;
-			}
+		if limit.is_some_and(|limit| shown >= limit) {
+			break;
 		}
 
 		shown += 1;
@@ -510,15 +504,14 @@ fn answer_prompt(state_dir: &Path, action: Action, job: &Job, daemon_pid: Option
 			.map(|answer| answer_state(&answer.state)),
 		Action::Quit | Action::Skip => unreachable!("only decisions are sent to the daemon"),
 	};
-	if let Err(retype_ipc::ClientError::Rpc(error)) = &result {
-		if error
+	if let Err(retype_ipc::ClientError::Rpc(error)) = &result
+		&& error
 			.detail
 			.as_deref()
 			.is_some_and(|detail| detail["decision"] == "stale")
-		{
-			eprintln!("retype: {id}: {}", error.message);
-			return Ok(PromptOutcome::Refresh);
-		}
+	{
+		eprintln!("retype: {id}: {}", error.message);
+		return Ok(PromptOutcome::Refresh);
 	}
 	result?;
 	Ok(PromptOutcome::Finished)

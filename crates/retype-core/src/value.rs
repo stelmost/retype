@@ -78,10 +78,10 @@ pub fn interpret(param: &Param, text: &str) -> Result<Value, Fault> {
 		Class::Time => Value::Time(time(text)?),
 		Class::Range => {
 			let (from, to) = endpoints(text, param)?;
-			if let (Some(from), Some(to)) = (from, to) {
-				if from > to {
-					return Err(out_of_range(format!("{from} comes after {to}")));
-				}
+			if let (Some(from), Some(to)) = (from, to)
+				&& from > to
+			{
+				return Err(out_of_range(format!("{from} comes after {to}")));
 			}
 			Value::Range { from, to }
 		}
@@ -104,15 +104,15 @@ pub fn interpret(param: &Param, text: &str) -> Result<Value, Fault> {
 /// produces.
 fn bounds(param: &Param, value: &Value) -> Result<(), Fault> {
 	let within = |number: u64, what: &str| -> Result<(), Fault> {
-		if let Some(min) = param.min {
-			if number < min {
-				return Err(out_of_range(format!("{what} {number} is below {min}")));
-			}
+		if let Some(min) = param.min
+			&& number < min
+		{
+			return Err(out_of_range(format!("{what} {number} is below {min}")));
 		}
-		if let Some(max) = param.max {
-			if number > max {
-				return Err(out_of_range(format!("{what} {number} is above {max}")));
-			}
+		if let Some(max) = param.max
+			&& number > max
+		{
+			return Err(out_of_range(format!("{what} {number} is above {max}")));
 		}
 		Ok(())
 	};

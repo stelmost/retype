@@ -34,13 +34,13 @@ impl Batches {
 
 	/// Forget a job that never became one, so a batch cannot wait for it.
 	pub fn forget(&self, batch: &str, id: &JobId) {
-		if let Ok(mut inner) = self.inner.lock() {
-			if let Some(entry) = inner.get_mut(batch) {
-				entry.jobs.remove(id);
+		if let Ok(mut inner) = self.inner.lock()
+			&& let Some(entry) = inner.get_mut(batch)
+		{
+			entry.jobs.remove(id);
 
-				if entry.jobs.is_empty() {
-					inner.remove(batch);
-				}
+			if entry.jobs.is_empty() {
+				inner.remove(batch);
 			}
 		}
 	}

@@ -254,10 +254,10 @@ impl Correlator {
 	/// then would leave the file that just moved with no identity at all, and the
 	/// next rename of it would be silent.
 	pub fn forget(&mut self, path: &Path) {
-		if let Some(identity) = self.by_path.remove(path) {
-			if self.by_identity.get(&identity).is_some_and(|current| current == path) {
-				self.by_identity.remove(&identity);
-			}
+		if let Some(identity) = self.by_path.remove(path)
+			&& self.by_identity.get(&identity).is_some_and(|current| current == path)
+		{
+			self.by_identity.remove(&identity);
 		}
 	}
 
@@ -284,19 +284,19 @@ impl Correlator {
 			return;
 		}
 		// A path that now carries another identity does not stand for the old one.
-		if let Some(previous) = self.by_path.insert(path.clone(), identity) {
-			if self.by_identity.get(&previous).is_some_and(|current| current == &path) {
-				self.by_identity.remove(&previous);
-			}
+		if let Some(previous) = self.by_path.insert(path.clone(), identity)
+			&& self.by_identity.get(&previous).is_some_and(|current| current == &path)
+		{
+			self.by_identity.remove(&previous);
 		}
 
 		// One identity belongs to one path: a rename moves it, and the old name has
 		// to leave `by_path` too, or forgetting that stale name would drop the
 		// identity that now belongs here.
-		if let Some(old) = self.by_identity.insert(identity, path.clone()) {
-			if old != path {
-				self.by_path.remove(&old);
-			}
+		if let Some(old) = self.by_identity.insert(identity, path.clone())
+			&& old != path
+		{
+			self.by_path.remove(&old);
 		}
 	}
 }

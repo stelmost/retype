@@ -258,8 +258,8 @@ fn uncarried(
 	let reason = reason_of(&problems);
 	let corrected = corrected(&shared.registry(), parsed, format, policy);
 
-	if !requests_confirmation(parsed, &shared.registry()) {
-		if let Some(verdict) = repair(
+	if !requests_confirmation(parsed, &shared.registry())
+		&& let Some(verdict) = repair(
 			shared,
 			pool,
 			root,
@@ -272,8 +272,7 @@ fn uncarried(
 			requested.as_deref(),
 			corrected.as_ref(),
 		) {
-			return verdict;
-		}
+		return verdict;
 	}
 
 	park(

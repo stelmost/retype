@@ -36,10 +36,10 @@ pub(super) fn serve<T: Send>(
 				clients.push(thread::Builder::new().name("retype-peer".to_string()).spawn_scoped(
 					scope,
 					move || {
-						if let Err(error) = connection_result(serve_peer(peer, server, stopping)) {
-							if !stopping.load(Ordering::Relaxed) {
-								eprintln!("retype: client connection closed: {error}");
-							}
+						if let Err(error) = connection_result(serve_peer(peer, server, stopping))
+							&& !stopping.load(Ordering::Relaxed)
+						{
+							eprintln!("retype: client connection closed: {error}");
 						}
 					},
 				)?);
