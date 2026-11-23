@@ -482,7 +482,7 @@ fn review_undo_refuses_a_job_still_waiting_to_run() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
 	let mut daemon = server(&state);
-	let job = parked_job(&daemon, dir.path(), "ask", JobState::NeedsAttention);
+	let job = parked_job_at(&daemon, dir.path().join("ask.tar"), "ask", JobState::NeedsAttention);
 	let store = retype_core::undo::Store::open(&state);
 	let record = crate::notify::review::retained_conversion(&store, job.id, &job.source.path);
 	let id = JobId::now().unwrap();
@@ -495,7 +495,7 @@ fn review_undo_refuses_a_job_still_waiting_to_run() {
 
 	let replies = replies_after_undo(&mut daemon, undo);
 	let error = replies[1].error.as_ref().unwrap();
-	assert_eq!(error.code, Code::JobState);
+	assert_eq!(error.code, Code::JobState, "{error:?}");
 	assert!(error.message.contains("still waiting or running"));
 	assert!(
 		daemon
@@ -595,6 +595,10 @@ fn an_undo_through_a_junction_reports_the_refusal_and_preserves_recovery() {
 
 fn parked_job(server: &Server, directory: &Path, reason: &str, state: JobState) -> Job {
 	let source = directory.join(format!("{}.tar", JobId::now().unwrap()));
+	parked_job_at(server, source, reason, state)
+}
+
+fn parked_job_at(server: &Server, source: PathBuf, reason: &str, state: JobState) -> Job {
 	fs::write(&source, b"input bytes").unwrap();
 	let now = retype_core::job::now_ms();
 	let job = Job {
