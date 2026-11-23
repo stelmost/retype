@@ -53,6 +53,8 @@ mod tests;
 mod unix_connections;
 #[cfg(unix)]
 pub use unix_connections::serve;
+#[cfg(unix)]
+pub(super) use unix_connections::serve_with_seen;
 
 enum ConnectionRequest<'a> {
 	Greeting(u64),

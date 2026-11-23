@@ -216,7 +216,11 @@ fn a_second_signal_cancels_what_the_first_one_waited_for() {
 	fixture.start_job();
 
 	fixture.signal(libc::SIGTERM);
-	std::thread::sleep(Duration::from_millis(200));
+	let deadline = Instant::now() + Duration::from_secs(5);
+	while !fixture.daemon_log().contains("a second signal cancels them") {
+		assert!(Instant::now() < deadline, "the first signal did not start a drain");
+		std::thread::sleep(Duration::from_millis(10));
+	}
 	fixture.signal(libc::SIGTERM);
 
 	let code = fixture.daemon.wait(Duration::from_secs(30));

@@ -15,8 +15,16 @@ use crate::error::Result;
 const IO_POLL: Duration = Duration::from_millis(100);
 
 pub fn serve(listener: UnixListener, server: &mut Server) -> Result<()> {
+	serve_with_seen(listener, server, &mut signals::Seen::now())
+}
+
+pub(in crate::daemon) fn serve_with_seen(
+	listener: UnixListener,
+	server: &mut Server,
+	seen: &mut signals::Seen,
+) -> Result<()> {
 	listener.set_nonblocking(true)?;
-	connections::serve(server, &mut signals::Seen::now(), move || accept(&listener), serve_peer)
+	connections::serve(server, seen, move || accept(&listener), serve_peer)
 }
 
 fn accept(listener: &UnixListener) -> Result<Option<UnixStream>> {

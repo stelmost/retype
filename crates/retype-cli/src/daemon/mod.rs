@@ -83,12 +83,13 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 
 	// Before the loop that watches for them, so a stop signal is a drain rather than a
 	// death, `docs/dev/architecture/ipc.md` §2.
+	let mut seen = signals::Seen::now();
 	signals::install();
 
-	let result = serve(listener, &mut server);
+	let result = server::serve_with_seen(listener, &mut server, &mut seen);
 
 	// A stop drains; a second signal does not wait for a twenty minute transcode.
-	signals::drain(&mut server);
+	signals::drain_since(&mut server, seen);
 
 	timer.0.store(true, std::sync::atomic::Ordering::Relaxed);
 	let _ = timer.1.join();
