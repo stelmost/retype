@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-FLAGS = ['--safe-writes', '--no-same-owner', '--no-same-permissions']
+FLAGS = ['--safe-writes', '--no-same-owner', '--no-same-permissions', '--xattrs']
 
 
 def main():

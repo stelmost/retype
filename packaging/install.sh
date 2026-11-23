@@ -231,8 +231,8 @@ extract_macos() {
 		die "archive links are unsupported\n" if / -> | link to /;
 	' "$destination.types" || die 'release archive contains links or special entries'
 	# Keep bsdtar secure-symlink/no-dotdot defaults enabled: never use -P or --insecure.
-	# Safe writes and empty private staging avoid existing-inode replacement; xattrs are not stripped.
-	/usr/bin/tar --safe-writes --no-same-owner --no-same-permissions -xzf "$archive" -C "$destination" ||
+	# --no-same-permissions disables xattrs too; re-enable only xattrs after it.
+	/usr/bin/tar --safe-writes --no-same-owner --no-same-permissions --xattrs -xzf "$archive" -C "$destination" ||
 		die 'native secure archive extraction failed'
 	/usr/bin/perl -MFile::Find -e '
 		use strict; use warnings;

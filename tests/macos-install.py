@@ -76,7 +76,7 @@ elif name == 'tar':
      kind = 'd' if entry.isdir() else '-' if entry.isfile() else 'l' if entry.issym() else 'h'
      print(kind + 'rwxr-xr-x fixture ' + entry.name)
  else:
-  assert args[:3] == ['--safe-writes', '--no-same-owner', '--no-same-permissions']
+  assert args[:4] == ['--safe-writes', '--no-same-owner', '--no-same-permissions', '--xattrs']
   archive_path = args[args.index('-xzf') + 1]; destination = args[args.index('-C') + 1]
   with tarfile.open(archive_path) as archive: archive.extractall(destination, filter='data')
 elif name == 'retype-notifier':
