@@ -290,7 +290,12 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 		if signal != crate::daemon::signals::Asked::Nothing {
 			return Ok(ExitCode::SUCCESS);
 		}
-		let mut client = match crate::client::connect_if_running(state_dir)? {
+		/* The daemon can close an accepted connection during shutdown before answering hello. */
+		let connection = match crate::client::connect_if_running(state_dir) {
+			Err(crate::error::Error::Client(error)) if allow_spawn && error.is_connection_closed() => None,
+			result => result?,
+		};
+		let mut client = match connection {
 			Some(client) => client,
 			None => {
 				if !allow_spawn {

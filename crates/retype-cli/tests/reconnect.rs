@@ -127,3 +127,40 @@ fn a_clean_explicit_stop_does_not_respawn_the_daemon() {
 		fs::read_to_string(fixture.dir.path().join("events")).unwrap()
 	);
 }
+
+#[test]
+fn a_greeting_closed_during_shutdown_still_checks_for_an_explicit_stop() {
+	use std::io::BufReader;
+	use std::os::unix::net::UnixListener;
+
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path();
+	let endpoint = retype_cli::state::socket_path(state).unwrap();
+	let listener = UnixListener::bind(&endpoint).unwrap();
+	listener.set_nonblocking(true).unwrap();
+	retype_cli::state::publish_endpoint(state, endpoint.to_str().unwrap()).unwrap();
+	retype_cli::daemon::lifecycle::begin(state).unwrap();
+	retype_cli::daemon::lifecycle::stopping(state).unwrap();
+	std::thread::scope(|scope| {
+		let daemon = scope.spawn(|| {
+			let deadline = Instant::now() + Duration::from_secs(5);
+			let stream = loop {
+				match listener.accept() {
+					Ok((stream, _)) => break stream,
+					Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+						std::thread::sleep(Duration::from_millis(5));
+					}
+					Err(error) => panic!("follower did not connect: {error}"),
+				}
+			};
+			stream.set_nonblocking(false).unwrap();
+			stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+			let hello = retype_ipc::read_frame(&mut BufReader::new(stream)).unwrap().unwrap();
+			assert_eq!(hello["method"], "hello");
+		});
+		let error = retype_cli::watch::follow(state, &[state.to_str().unwrap().to_string()], true, true).unwrap_err();
+		daemon.join().unwrap();
+		assert!(error.to_string().contains("explicitly stopped"), "{error}");
+	});
+	assert!(!state.join("daemon.log").exists());
+}

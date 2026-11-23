@@ -501,8 +501,12 @@ impl ClientError {
 
 	/// Whether connection failed or timed out, excluding an explicitly busy slot.
 	pub fn is_disconnected(&self) -> bool {
-		self.is_unavailable()
-			|| matches!(self, Self::Frame(crate::FrameError::Closed | crate::FrameError::Io(_)))
+		self.is_unavailable() || self.is_connection_closed()
+	}
+
+	/// Whether an established connection closed or failed while exchanging a frame.
+	pub fn is_connection_closed(&self) -> bool {
+		matches!(self, Self::Frame(crate::FrameError::Closed | crate::FrameError::Io(_)))
 			|| matches!(self, Self::Protocol(message) if message.starts_with("the daemon closed the connection"))
 	}
 
