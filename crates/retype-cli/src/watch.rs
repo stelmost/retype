@@ -188,7 +188,7 @@ pub fn unwatch(state_dir: &Path, directories: &[String], json: bool) -> Result<E
 				"removed": removed,
 			}));
 		} else if !removed {
-			eprintln!("retype: {} was not registered", directory);
+			eprintln!("retype: {directory} was not registered");
 		}
 	}
 

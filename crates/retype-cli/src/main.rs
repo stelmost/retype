@@ -914,7 +914,7 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 			} else {
 				match cancelled {
 					0 => println!("stopped"),
-					count => println!("stopped, {} job(s) cancelled", count),
+					count => println!("stopped, {count} job(s) cancelled"),
 				}
 			}
 

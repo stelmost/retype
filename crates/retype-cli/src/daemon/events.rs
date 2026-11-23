@@ -85,7 +85,7 @@ mod tests {
 
 	fn job(index: usize) -> Job {
 		Job {
-			id: JobId::parse(&format!("01J{:023}", index)).unwrap(),
+			id: JobId::parse(&format!("01J{index:023}")).unwrap(),
 			created: 0,
 			updated: 0,
 			source: Source {

@@ -1077,8 +1077,7 @@ fn parse_listing(text: &str) -> Result<Vec<TreeEntry>> {
 					return Err(Error::Diagnostic(Diagnostic::global(
 						Code::Unsupported,
 						format!(
-							"'{path}' is '{}', and an archive of files and directories is all this carries",
-							mode_text
+							"'{path}' is '{mode_text}', and an archive of files and directories is all this carries"
 						),
 					)));
 				}

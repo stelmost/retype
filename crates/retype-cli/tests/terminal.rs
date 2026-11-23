@@ -52,7 +52,7 @@ impl Fixture {
 			.stdin(Stdio::null())
 			.output()
 			.unwrap();
-		assert_eq!(output.status.code(), Some(7), "{:?}", output);
+		assert_eq!(output.status.code(), Some(7), "{output:?}");
 		let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
 		answer["error"]["detail"]["id"].as_str().unwrap().to_string()
 	}

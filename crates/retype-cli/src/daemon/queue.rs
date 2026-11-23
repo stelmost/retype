@@ -587,7 +587,7 @@ mod tests {
 
 	/// A job id, distinct per call, for tests that submit several.
 	fn id(index: usize) -> JobId {
-		JobId::parse(&format!("01J{:023}", index)).expect("a valid id")
+		JobId::parse(&format!("01J{index:023}")).expect("a valid id")
 	}
 
 	fn shared(state: &std::path::Path) -> Arc<Shared> {

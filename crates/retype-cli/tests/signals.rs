@@ -168,8 +168,7 @@ impl Fixture {
 		assert_eq!(
 			unsafe { libc::kill(self.daemon.pid(), signal) },
 			0,
-			"the daemon did not take {}",
-			signal
+			"the daemon did not take {signal}"
 		);
 	}
 

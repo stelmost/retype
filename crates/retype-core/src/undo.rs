@@ -723,7 +723,7 @@ impl Store {
 		let mut dropped = Vec::with_capacity(evictions.len());
 		for lease in evictions {
 			if self.load(&lease.id)?.is_some_and(|record| {
-				record.pinned || !age(&record, SystemTime::now()).is_some_and(|age| age > policy.retention)
+				record.pinned || age(&record, SystemTime::now()).is_none_or(|age| age <= policy.retention)
 			}) {
 				return Err(
 					std::io::Error::other("undo expiry changed during backup; new recovery remains pinned").into(),
@@ -1586,7 +1586,7 @@ mod tests {
 	use super::*;
 
 	fn id(index: usize) -> JobId {
-		JobId::parse(&format!("01J{:023}", index)).expect("a valid id")
+		JobId::parse(&format!("01J{index:023}")).expect("a valid id")
 	}
 
 	#[cfg(any(target_os = "linux", target_os = "macos"))]

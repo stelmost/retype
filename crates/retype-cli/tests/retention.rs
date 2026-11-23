@@ -38,7 +38,7 @@ fn record(store: &Store, dir: &Path, index: usize, age_hours: i64) -> JobId {
 	let bytes = dir.join(format!("photo{index}.heic"));
 	fs::write(&bytes, b"heic bytes").unwrap();
 
-	let id = JobId::parse(&format!("01J{:023}", index)).unwrap();
+	let id = JobId::parse(&format!("01J{index:023}")).unwrap();
 	let mut saved: Record = store
 		.save(Subject {
 			id: id.clone(),

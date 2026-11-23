@@ -71,7 +71,7 @@ mod tests {
 	use super::*;
 
 	fn id(index: usize) -> JobId {
-		JobId::parse(&format!("01J{:023}", index)).expect("an id")
+		JobId::parse(&format!("01J{index:023}")).expect("an id")
 	}
 
 	#[test]

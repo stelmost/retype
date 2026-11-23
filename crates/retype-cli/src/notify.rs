@@ -1133,7 +1133,7 @@ mod tests {
 		)
 		.expect("a job");
 
-		job.id = JobId::parse(&format!("01J{:023}", id)).expect("an id");
+		job.id = JobId::parse(&format!("01J{id:023}")).expect("an id");
 		job.state = state;
 
 		if matches!(state, JobState::Done | JobState::Partial) {

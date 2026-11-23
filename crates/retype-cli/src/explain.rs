@@ -209,7 +209,7 @@ fn check_source(source: &Named) -> std::result::Result<(), u8> {
 		Err(error) => {
 			return Err(output::fail(
 				&retype_core::error::code_for_io(&error),
-				format!("{}: {error}", path),
+				format!("{path}: {error}"),
 			));
 		}
 	};
@@ -218,13 +218,13 @@ fn check_source(source: &Named) -> std::result::Result<(), u8> {
 		if let Err(error) = std::fs::read_dir(&path) {
 			return Err(output::fail(
 				&retype_core::error::code_for_io(&error),
-				format!("{}: {error}", path),
+				format!("{path}: {error}"),
 			));
 		}
 	} else if let Err(error) = std::fs::File::open(&path) {
 		return Err(output::fail(
 			&retype_core::error::code_for_io(&error),
-			format!("{}: {error}", path),
+			format!("{path}: {error}"),
 		));
 	}
 
