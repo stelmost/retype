@@ -15,7 +15,7 @@ version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.88"
 license = "ISC"
-repository = "https://github.com/LapilliWorks/retype"
+repository = "https://github.com/stelmost/retype"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }

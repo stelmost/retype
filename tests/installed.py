@@ -108,7 +108,7 @@ def main():
         change = 'application registration' if macos else 'PATH'
         parser.error(f'{sys.platform} changes current-user {change}; approve a disposable session first')
     application_link = Path.home() / 'Applications/retype.app'
-    macos_unit = Path.home() / 'Library/LaunchAgents/com.lapilliworks.retype.cli.plist'
+    macos_unit = Path.home() / 'Library/LaunchAgents/st.elmo.retype.cli.plist'
     if macos:
         assert not any(path.exists() or path.is_symlink() for path in (application_link, macos_unit)), \
             'Refusing to replace existing macOS user integration'
@@ -335,7 +335,7 @@ def main():
                       sha(app / 'Contents/Resources/retype') == sha(binary) and not macos_unit.exists())
                 check('installed URI association and owned app link', application_link.is_symlink() and
                       application_link.resolve() == app.resolve() and
-                      run('macos-uri-default', [notifier, 'handler']).strip() == 'com.lapilliworks.retype.cli')
+                      run('macos-uri-default', [notifier, 'handler']).strip() == 'st.elmo.retype.cli')
             run('version', [binary, 'version'])
             run('doctor', [binary, 'doctor', '--check', '--state-dir', state])
             job, original = convert_heic('heic', work / 'photo.HEIC')

@@ -922,7 +922,7 @@ pub(crate) mod review {
 
 /// The AppUserModelID the toast is shown under, in the publisher's reverse-DNS form.
 #[cfg(any(target_os = "windows", test))]
-const APP_ID: &str = "com.lapilliworks.retype.cli";
+const APP_ID: &str = "st.elmo.retype.cli";
 
 /// Show a toast through system PowerShell. Without our registered handler it stays plain.
 #[cfg(windows)]

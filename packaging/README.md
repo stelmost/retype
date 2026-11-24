@@ -118,7 +118,7 @@ Removal stops and disables the owned service and drains an unsupervised daemon f
 
 The launchd plist, Linux desktop entry and systemd unit name the install prefix as `@PREFIX@`; the installer substitutes and escapes it for the destination format.
 
-Signing is mandatory for installed-tier publication and execution. All platforms require the final publisher-signed manifest. Windows additionally requires Authenticode with an independently pinned publisher certificate and a secure timestamp. macOS requires Developer ID, hardened runtime and notarisation. Both app and CLI use `com.lapilliworks.retype.cli`. Sign fresh staging outputs, copy the final signed inner CLI to `bin/retype`, and require byte equality. Qualify extraction and metadata/staple preservation on the exact macOS archive.
+Signing is mandatory for installed-tier publication and execution. All platforms require the final publisher-signed manifest. Windows additionally requires Authenticode with an independently pinned publisher certificate and a secure timestamp. macOS requires Developer ID, hardened runtime and notarisation. Both app and CLI use `st.elmo.retype.cli`. Sign fresh staging outputs, copy the final signed inner CLI to `bin/retype`, and require byte equality. Qualify extraction and metadata/staple preservation on the exact macOS archive.
 
 Required public inputs for the protected environment and native preparation:
 

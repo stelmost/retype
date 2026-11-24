@@ -17,15 +17,15 @@ The embedded verifiers authenticate the manifest/archive before extraction and v
 Signed installation creates only per-user integration:
 
 - `HKCU\Software\Classes\retype`: A direct command to the GUI-subsystem `retype-review.exe` ending in `-- "%1"`, never a shell command. Opening Review does not create a console; `retype.exe` remains the terminal CLI.
-- `HKCU\Software\Classes\AppUserModelId\com.lapilliworks.retype.cli`: The notification identity and display name
-- The user's `Programs\retype.lnk`: A native shell link with `System.AppUserModel.ID = com.lapilliworks.retype.cli`, targeting existing `daemon start`
+- `HKCU\Software\Classes\AppUserModelId\st.elmo.retype.cli`: The notification identity and display name
+- The user's `Programs\retype.lnk`: A native shell link with `System.AppUserModel.ID = st.elmo.retype.cli`, targeting existing `daemon start`
 - The install `bin` directory in the user PATH, unless already present
 
 A supported toast can offer **Review** for one job using `retype://job/<full-job-id>`. The handler cannot take Undo, cancel or resolve from a URL. An ordinary, verified graphical login is required for the Review dialog, which defaults to **Close**. Plain toasts remain available without Review. The installer neither launches the daemon nor installs converters.
 
 ### Startup
 
-A fresh install leaves startup disabled. Updates preserve the previous opt-in by default. `RETYPE_STARTUP=enable` adds only `com.lapilliworks.retype.cli` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, invoking the exact installed CLI's existing `daemon start`. `RETYPE_STARTUP=disable` removes only that owned value. Both changes apply at the next sign-in, not immediately. Other startup entries are retained.
+A fresh install leaves startup disabled. Updates preserve the previous opt-in by default. `RETYPE_STARTUP=enable` adds only `st.elmo.retype.cli` in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, invoking the exact installed CLI's existing `daemon start`. `RETYPE_STARTUP=disable` removes only that owned value. Both changes apply at the next sign-in, not immediately. Other startup entries are retained.
 
 An explicitly selected `RETYPE_STATE_DIR` or `RETYPE_CONFIG` is pinned into the shortcut/startup arguments and preserved on update unless explicitly changed. The Review launcher only needs the state directory. A selected integration configuration must exist. Paths that overlap incoming installed files are refused rather than replaced with defaults or overwritten.
 

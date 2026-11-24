@@ -26,11 +26,11 @@ Other desktop OS and architecture combinations are best effort, not qualificatio
 Two tiers exist, and the difference is deliberate. Pre-release installers are a
 convenience on top of the source tier, not a third tier.
 
-The unsigned CLI alpha is a manual archive download from [GitHub Releases](https://github.com/LapilliWorks/retype/releases) once published. Extract the archive for your platform and keep `bin/` and `share/` together. See [alpha packaging](packaging/README.md#unsigned-cli-alpha) for available targets and checksums.
+The unsigned CLI alpha is a manual archive download from [GitHub Releases](https://github.com/stelmost/retype/releases) once published. Extract the archive for your platform and keep `bin/` and `share/` together. See [alpha packaging](packaging/README.md#unsigned-cli-alpha) for available targets and checksums.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
   URI scheme, user service. External tools are acquired separately. Supported
-- **Source**: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`. The
+- **Source**: `cargo install --git https://github.com/stelmost/retype retype-cli`. The
   binary includes the daemon, but no service, URI registration or notifier
   bundle is installed. A workaround, not the supported path
 

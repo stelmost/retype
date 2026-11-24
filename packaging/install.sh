@@ -119,7 +119,7 @@ retype_verify_macos() (
 )
 # END RETYPE_MACOS_TRUST
 
-repo=${RETYPE_REPO:-LapilliWorks/retype}
+repo=${RETYPE_REPO:-stelmost/retype}
 version=${RETYPE_VERSION:-latest}
 prefix=${RETYPE_PREFIX:-${HOME:?HOME is not set}/.local}
 target=${RETYPE_TARGET:-}
@@ -148,7 +148,7 @@ Options:
 Environment:
   RETYPE_VERSION       Same as --version
   RETYPE_PREFIX        Same as --prefix
-  RETYPE_REPO          GitHub repository (default: LapilliWorks/retype)
+  RETYPE_REPO          GitHub repository (default: stelmost/retype)
   RETYPE_RELEASE_BASE  Release download base, for a mirror
   RETYPE_TARGET        Override platform detection, such as x86_64-unknown-linux-gnu
   RETYPE_INSTALL_MODE  signed (default) or explicit preview
@@ -548,7 +548,7 @@ case $target in
 	extract_macos "$tmp/$archive" "$tmp/unpack" "$name"
 	src=$tmp/unpack/$name
 	[ "$install_mode" != signed ] || retype_verify_macos "$src/share/retype/macos/retype.app" \
-		Contents/Resources/retype "$retype_macos_team_id" com.lapilliworks.retype.cli com.lapilliworks.retype.cli
+		Contents/Resources/retype "$retype_macos_team_id" st.elmo.retype.cli st.elmo.retype.cli
 	cmp -s "$src/bin/retype" "$src/share/retype/macos/retype.app/Contents/Resources/retype" ||
 		die 'macOS archive CLI differs from the bundled CLI'
 	;;
@@ -571,7 +571,7 @@ if [ -d "$src/share/retype" ]; then
 fi
 case $target in *-apple-darwin)
 	[ "$install_mode" != signed ] || retype_verify_macos "$staged_share/macos/retype.app" \
-		Contents/Resources/retype "$retype_macos_team_id" com.lapilliworks.retype.cli com.lapilliworks.retype.cli
+		Contents/Resources/retype "$retype_macos_team_id" st.elmo.retype.cli st.elmo.retype.cli
 	;;
 esac
 output=$("$staged_bin" --version 2>&1) || die "the staged binary does not run; installation unchanged: $output"

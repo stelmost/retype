@@ -4,7 +4,7 @@ import CoreGraphics
 import CoreServices
 import UserNotifications
 
-let appID = "com.lapilliworks.retype.cli"
+let appID = "st.elmo.retype.cli"
 let bundle = Bundle.main
 let cli = bundle.bundleURL.appendingPathComponent("Contents/Resources/retype")
 let receipt = bundle.bundleURL.deletingLastPathComponent().deletingLastPathComponent()

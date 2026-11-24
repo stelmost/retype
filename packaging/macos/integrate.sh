@@ -49,8 +49,8 @@ app=$share/macos/retype.app
 notifier=$app/Contents/MacOS/retype-notifier
 receipt=$share/macos-installation
 link=${HOME:?HOME is not set}/Applications/retype.app
-agent=$HOME/Library/LaunchAgents/com.lapilliworks.retype.cli.plist
-label=com.lapilliworks.retype.cli
+agent=$HOME/Library/LaunchAgents/st.elmo.retype.cli.plist
+label=st.elmo.retype.cli
 uid=$(id -u)
 domain=gui/$uid
 job=$domain/$label
@@ -165,7 +165,7 @@ write_agent() {
 		[ -f "$journal/agent-before" ] && [ "$(hash "$agent")" = "$(hash "$journal/agent-before")" ] ||
 			fail "preserved a LaunchAgent changed during installation: $agent"
 	fi
-	template=$(<"$share/packaging/macos/com.lapilliworks.retype.cli.plist")
+	template=$(<"$share/packaging/macos/st.elmo.retype.cli.plist")
 	value=$(xml_escape "$prefix")
 	template=${template//@PREFIX@/"$value"}
 	mkdir -p "$(dirname "$agent")"

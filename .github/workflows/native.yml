@@ -167,7 +167,7 @@ jobs:
             mkdir -p "dist/$name/bin"
             cp -p "$binary" "dist/$name/bin/retype"
             binary="dist/$name/bin/retype"
-            /usr/bin/codesign --force --sign - --identifier com.lapilliworks.retype.cli "$binary"
+            /usr/bin/codesign --force --sign - --identifier st.elmo.retype.cli "$binary"
           fi
           "$binary" --version
           "$binary" fidelity --pair png:jpg --pair png:webp --state-dir "$RUNNER_TEMP/retype-fidelity" \

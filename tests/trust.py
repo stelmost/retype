@@ -165,7 +165,7 @@ def macos_tests():
 	tool(bin_dir, 'uname', "printf 'Darwin\\n'\n")
 	tool(bin_dir, 'plutil', '''
 case $2 in
-CFBundleIdentifier) printf 'com.lapilliworks.retype.cli\n' ;;
+CFBundleIdentifier) printf 'st.elmo.retype.cli\n' ;;
 CFBundleExecutable) printf 'retype-notifier\n' ;;
 *) exit 64 ;;
 esac
@@ -179,7 +179,7 @@ case $1 in
 	else
 		[[ $* == *--deep* && $* == *--strict* && $* == *'=anchor apple generic'* ]]
 		[[ $* == *'certificate leaf[subject.OU] = "0000000000"'* ]]
-		id=com.lapilliworks.retype.cli
+		id=st.elmo.retype.cli
 		[[ $* == *"identifier = \\\"$id\\\""* ]]
 		[[ ${RETYPE_TEST_CODE_REJECT:-0} != 1 ]]
 	fi ;;
@@ -205,7 +205,7 @@ printf 'accepted\nsource=%s\n' "${RETYPE_TEST_SOURCE:-Notarized Developer ID}"
 	(app / 'Contents/MacOS/retype-notifier').write_bytes(DATA)
 	(app / 'Contents/Resources/retype').write_bytes(DATA)
 	command = [BASH, ROOT / SOURCES[3], app, 'Contents/Resources/retype', '0000000000',
-		'com.lapilliworks.retype.cli', 'com.lapilliworks.retype.cli']
+		'st.elmo.retype.cli', 'st.elmo.retype.cli']
 	environment = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']}
 	check('macos-adapter-positive', command, True, environment)
 	cases = {
@@ -254,7 +254,7 @@ esac
 	app = REPORT / 'synthetic.app'
 	before = {path: path.read_bytes() for path in app.rglob('*') if path.is_file()}
 	inputs = [BASH, ROOT / 'scripts/sign-macos.sh', app, 'Contents/Resources/retype', '0000000000',
-		'com.lapilliworks.retype.cli', 'com.lapilliworks.retype.cli',
+		'st.elmo.retype.cli', 'st.elmo.retype.cli',
 		'SYNTHETIC-NOT-PUBLISHER', 'SYNTHETIC-NOT-PROFILE']
 	output = REPORT / 'macos-signing-positive'
 	check('macos-signing-adapter-positive', inputs + [output], True, environment)

@@ -43,7 +43,7 @@ public static class RetypeShortcutIdentity {
 			Format = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), Id = 5
 		};
 		var value = new PropertyValue {
-			Type = 31, Text = Marshal.StringToCoTaskMemUni("com.lapilliworks.retype.cli")
+			Type = 31, Text = Marshal.StringToCoTaskMemUni("st.elmo.retype.cli")
 		};
 		try {
 			Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref value));

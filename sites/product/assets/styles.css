@@ -1847,31 +1847,32 @@ h2 {
 }
 
 .footer-studio {
-	--wordmark-height: 19px;
+	--mark-size: 24px;
 	display: inline-flex;
-	align-items: baseline;
-	gap: 0.4rem;
+	align-items: center;
+	gap: 0.45rem;
 	text-decoration: none;
 }
 
 .footer-studio img {
-	width: auto;
-	height: var(--wordmark-height);
+	width: var(--mark-size);
+	height: var(--mark-size);
 }
 
-.footer-studio span {
-	transform: translateY(calc(var(--wordmark-height) * -0.292));
+.footer-studio-name {
+	font-family: var(--mono);
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.28em;
+	color: #ECF2F9;
 }
 
-.footer-studio span {
-	font-size: 0.8rem;
-	font-weight: 600;
-	letter-spacing: -0.02em;
-	color: #c9c1b4;
+.footer-studio-dot {
+	color: #5CE1FF;
 }
 
-.footer-studio:hover span {
-	color: var(--cream);
+.footer-studio:hover .footer-studio-name {
+	color: #ffffff;
 }
 
 /* ---------- motion ---------- */

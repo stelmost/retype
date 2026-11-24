@@ -14,8 +14,8 @@ sites/product/
 		favicon.svg
 		mark.svg
 		mark-reversed.svg
-		lapilli-wordmark.svg
-		lapilli-wordmark-reversed.svg
+		elmo-st-mark.svg
+		elmo-st-mark-reversed.svg
 		og.svg
 	bin/serve.mjs       Dev server, serves / and proxies /docs/ to the manual
 	bin/build.mjs       Copies the static files to SITE_OUT_DIR

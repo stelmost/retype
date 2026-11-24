@@ -16,7 +16,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = 'aarch64-apple-darwin'
-APP_ID = 'com.lapilliworks.retype.cli'
+APP_ID = 'st.elmo.retype.cli'
 
 FAKE_TOOLS = r'''import json, os, plistlib, sys, tarfile
 from pathlib import Path
@@ -55,7 +55,7 @@ elif name == 'launchctl':
  else: raise AssertionError(args)
 elif name == 'lsregister':
  assert args[0] == '-u'; state['registered'] = False
- if state['handler'] == 'com.lapilliworks.retype.cli': state['handler'] = ''
+ if state['handler'] == 'st.elmo.retype.cli': state['handler'] = ''
  save()
 elif name == 'plutil':
  path = Path(args[-1]); value = plistlib.loads(path.read_bytes())

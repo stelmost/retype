@@ -50,7 +50,7 @@ macOS checks both the app and the CLI explicitly, because Resources binaries are
 
 ```sh
 retype_verify_macos "$app" Contents/Resources/retype "$approved_team_id" \
-  com.lapilliworks.retype.cli com.lapilliworks.retype.cli
+  st.elmo.retype.cli st.elmo.retype.cli
 # verify-macos.sh accepts the same five arguments
 ```
 
@@ -67,7 +67,7 @@ These installed-tool wrappers require separate authorization before real signing
 bash scripts/sign-release.sh "$final_release_directory" "$existing_signing_key_path" "$approved_public_key"
 # Native macOS: app, CLI relative path, Team, app ID, CLI ID, existing identity, existing profile, fresh output
 bash scripts/sign-macos.sh "$unsigned_app" Contents/Resources/retype "$approved_team_id" \
-  com.lapilliworks.retype.cli com.lapilliworks.retype.cli \
+  st.elmo.retype.cli st.elmo.retype.cli \
   "$existing_developer_id_identity" "$existing_notarytool_profile" "$fresh_output_directory"
 ```
 

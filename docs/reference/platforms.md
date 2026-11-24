@@ -16,7 +16,7 @@ This is the current initial-release scope, not a permanent platform policy. Othe
 
 Required qualification uses the exact release candidate on each supported OS and architecture. Hosted Windows Server compatibility CI does not establish Windows 10 22H2 or interactive desktop behavior. Native Windows 10 22H2 qualification remains required before release approval. Container and controlled-session results do not establish real desktop login or notification behavior.
 
-Earlier [Debian qualification run 44814840504](https://github.com/lapilliworks/retype/actions/runs/44814840504) passed native userspace, interruption, architecture-specific fidelity and installed-archive checks on amd64 and ARM64 for its recorded revision. That evidence does not qualify a changed release candidate or promote ARM64 from best effort.
+Earlier [Debian qualification run 44814840504](https://github.com/stelmost/retype/actions/runs/44814840504) passed native userspace, interruption, architecture-specific fidelity and installed-archive checks on amd64 and ARM64 for its recorded revision. That evidence does not qualify a changed release candidate or promote ARM64 from best effort.
 
 - Linux desktop support is Wayland-only; X11 is unsupported
 - Linux builds and qualification use Debian 13 stable userspace; the older Debian 11/glibc 2.31 floor is retired
@@ -117,9 +117,9 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 | Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
 | Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
-Publisher identity is fixed: Lapilli Works LLC. The GUI is `com.lapilliworks.retype`, the CLI is `com.lapilliworks.retype.cli`, and a standalone notifier is `com.lapilliworks.retype.notifier`. The display name is `retype`. Reputation is bound to the publisher identity, so it is never changed casually.
+Publisher identity is fixed: Elmo St. Ltd. The GUI is `st.elmo.retype`, the CLI is `st.elmo.retype.cli`, and a standalone notifier is `st.elmo.retype.notifier`. The display name is `retype`. Reputation is bound to the publisher identity, so it is never changed casually.
 
-Signed archives and their standalone installers require the final publisher-signed `SHA256SUMS.minisig`. Canonical verifier blocks are embedded from trusted source before checksums. Publisher keys, native certificate/Team pins and existing signing selectors must be independently approved. Both macOS app and CLI use the fixed `com.lapilliworks.retype.cli` identifier. The [unsigned CLI alpha](https://github.com/LapilliWorks/retype/blob/master/packaging/README.md#unsigned-cli-alpha) is a manual download with SHA-256 checksums. The macOS alpha executable has an ad-hoc signature. Installed-tier qualification requires publisher trust.
+Signed archives and their standalone installers require the final publisher-signed `SHA256SUMS.minisig`. Canonical verifier blocks are embedded from trusted source before checksums. Publisher keys, native certificate/Team pins and existing signing selectors must be independently approved. Both macOS app and CLI use the fixed `st.elmo.retype.cli` identifier. The [unsigned CLI alpha](https://github.com/stelmost/retype/blob/master/packaging/README.md#unsigned-cli-alpha) is a manual download with SHA-256 checksums. The macOS alpha executable has an ad-hoc signature. Installed-tier qualification requires publisher trust.
 
 The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 

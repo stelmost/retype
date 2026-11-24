@@ -7,7 +7,7 @@ Status is pre-alpha: some documented behaviour is still being built. Work on cop
 ## What you need
 
 - A terminal
-- `retype` itself. The pre-release installers fetch a release binary and update it in place: `curl -fsSL https://retype.name/install.sh | bash` on Linux and macOS, or `irm https://retype.name/install.ps1 | iex` in PowerShell on Windows. Without that, build from source with a Rust toolchain: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`
+- `retype` itself. The pre-release installers fetch a release binary and update it in place: `curl -fsSL https://retype.name/install.sh | bash` on Linux and macOS, or `irm https://retype.name/install.ps1 | iex` in PowerShell on Windows. Without that, build from source with a Rust toolchain: `cargo install --git https://github.com/stelmost/retype retype-cli`
 - A converter for each format that needs one. ZIP and TAR repacking is native; [The default tools](#the-default-tools) lists external tools, and `retype doctor` reports which it finds
 
 ## The default tools

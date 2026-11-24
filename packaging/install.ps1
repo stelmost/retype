@@ -4,7 +4,7 @@
 # Environment:
 #   RETYPE_VERSION       Release tag, or latest (default)
 #   RETYPE_PREFIX        Default: $env:LOCALAPPDATA\Programs\retype
-#   RETYPE_REPO          Default: LapilliWorks/retype
+#   RETYPE_REPO          Default: stelmost/retype
 #   RETYPE_RELEASE_BASE  Release download base, for a mirror
 #   RETYPE_TARGET        Native x86_64-pc-windows-msvc or aarch64-pc-windows-msvc
 #   RETYPE_ACTION        install (default) or remove; removal never downloads or purges user data
@@ -343,7 +343,7 @@ function Assert-RetypeWindowsTrust {
 	$receiptPath = Join-Path $Prefix '.retype-install.json'
 	$machine = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 	if ($machine -notin @('AMD64', 'ARM64')) { throw "Unsupported architecture: $machine" }
-	$AppId = 'com.lapilliworks.retype.cli'
+	$AppId = 'st.elmo.retype.cli'
 	$UriKey = 'HKCU:\Software\Classes\retype'
 	$IdentityKey = 'HKCU:\Software\Classes\AppUserModelId\' + $AppId
 	$RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -451,7 +451,7 @@ function Assert-RetypeWindowsTrust {
 				Write-Warning 'Explicit CLI-only preview: no publisher signature or URI/notification/startup registration; bin is added to user PATH.'
 			}
 			[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-			$Repo = if ($env:RETYPE_REPO) { $env:RETYPE_REPO } else { 'LapilliWorks/retype' }
+			$Repo = if ($env:RETYPE_REPO) { $env:RETYPE_REPO } else { 'stelmost/retype' }
 			$Version = if ($env:RETYPE_VERSION) { $env:RETYPE_VERSION } else { 'latest' }
 			$ReleaseBase = if ($env:RETYPE_RELEASE_BASE) { $env:RETYPE_RELEASE_BASE } else { "https://github.com/$Repo/releases/download" }
 			$Target = switch ($machine) { 'AMD64' { 'x86_64-pc-windows-msvc' } 'ARM64' { 'aarch64-pc-windows-msvc' } default { throw "Unsupported architecture: $machine" } }
