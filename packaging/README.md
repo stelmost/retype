@@ -1,8 +1,6 @@
 # Release packaging
 
-The source build in `README.md` is a workaround. A release is the installed tier:
-the CLI and daemon, the notifier, URI registration and a user service, with no
-external tool binaries. Manual workflow dispatch produces non-publishing preview artifacts. Tagged publication is signed-only and refuses missing signed/qualified archives, installer closure or publisher inputs. Preview success is not an installed-tier pass; native qualification and core safety blockers still prevent release approval.
+The unsigned CLI alpha is available as manual archives once its draft is published. The signed installed tier includes the CLI and daemon, the notifier, URI registration and a user service. External converter tools are installed separately.
 
 ## Asset layout
 
@@ -44,7 +42,13 @@ The current required targets are defined in [Platforms](../docs/reference/platfo
 
 Windows MSVC builds use `-C target-feature=+crt-static`; a compile-time test guard refuses a dynamic CRT. The qualified Windows build/copy/`tar.exe`/hash/restricted-worker pipeline is retained. The release workflow does not rebuild those archives or manufacture additional architectures from another run's evidence.
 
-Manual dispatch consumes only `retype-preview-*` artifacts and cannot publish. The tag workflow downloads the exact approved candidate from a separate draft release in this repository. It does not rebuild, re-sign, use preview artifacts, or overwrite a published release. The tag must match the workspace version and the qualification's source revision.
+Manual dispatch assembles `retype-preview-*` artifacts. The `unsigned_alpha` option stages a draft after checks pass. The signed tag workflow verifies and publishes the exact approved assets from a separate draft release in this repository. The tag must match the workspace version and the qualification's source revision.
+
+### Unsigned CLI alpha
+
+Run the `release` workflow on the alpha branch with `unsigned_alpha` enabled. It checks that the workspace has an alpha version, builds and tests that commit, verifies the three required archives, and stages an unpublished GitHub prerelease draft targeting that commit. The draft contains only the three archives and `SHA256SUMS`. Review the results and publish the draft from GitHub Releases.
+
+Download and extract the archive for Debian 13 amd64, Windows amd64, or macOS 15 on Apple silicon. Keep `bin/` and `share/` together and run `bin/retype --version` or `bin/retype.exe --version`. The macOS archive contains an ad-hoc-signed CLI, which the workflow tests after extraction. Windows and macOS may warn about or block a downloaded executable. The source build remains available. The alpha covers the CLI and daemon. Signed desktop installation has its own qualification below.
 
 ### Signed candidate handoff
 
@@ -107,7 +111,7 @@ Removal stops and disables the owned service and drains an unsupervised daemon f
 
 The launchd plist, Linux desktop entry and systemd unit name the install prefix as `@PREFIX@`; the installer substitutes and escapes it for the destination format.
 
-Signing is mandatory for tagged publication and installed-tier execution. All platforms require the final publisher-signed manifest. Windows additionally requires Authenticode with an independently pinned publisher certificate and a secure timestamp. macOS requires Developer ID, hardened runtime and notarisation; both app and CLI use `com.lapilliworks.retype.cli`. Sign fresh staging outputs, copy the final signed inner CLI to `bin/retype`, and require byte equality. Qualify extraction and metadata/staple preservation on the exact macOS archive; no USTAR/no-xattrs restriction substitutes for that check.
+Signing is mandatory for installed-tier publication and execution. All platforms require the final publisher-signed manifest. Windows additionally requires Authenticode with an independently pinned publisher certificate and a secure timestamp. macOS requires Developer ID, hardened runtime and notarisation. Both app and CLI use `com.lapilliworks.retype.cli`. Sign fresh staging outputs, copy the final signed inner CLI to `bin/retype`, and require byte equality. Qualify extraction and metadata/staple preservation on the exact macOS archive.
 
 Required public inputs for the protected environment and native preparation:
 

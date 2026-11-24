@@ -4,36 +4,62 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      unsigned_alpha:
+        description: Stage a draft prerelease with unsigned CLI downloads
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   verify:
-    name: verify tag
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    name: verify release version
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      alpha_tag: ${{ steps.version.outputs.alpha_tag }}
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches the workspace version
+        with:
+          persist-credentials: false
+      - name: Check the workspace version
+        id: version
         shell: bash
+        env:
+          UNSIGNED_ALPHA: ${{ inputs.unsigned_alpha }}
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n1)
           [ -n "$version" ] || { echo 'no workspace version in Cargo.toml' >&2; exit 1; }
-          [ "$GITHUB_REF_NAME" = "v$version" ] || {
-            echo "tag $GITHUB_REF_NAME does not match workspace version v$version" >&2
-            exit 1
-          }
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            [ "$GITHUB_REF_NAME" = "v$version" ] || {
+              echo "tag $GITHUB_REF_NAME does not match workspace version v$version" >&2
+              exit 1
+            }
+          fi
+          if [ "$UNSIGNED_ALPHA" = true ]; then
+            [[ $GITHUB_REF_TYPE == branch && $version =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha(\.[0-9]+)?$ ]] || {
+              echo 'Draft preparation requires a branch and an alpha workspace version.' >&2
+              exit 1
+            }
+            printf 'alpha_tag=v%s\n' "$version" >> "$GITHUB_OUTPUT"
+          fi
 
   debian:
     name: Debian 13 preview build and installed verification
+    needs: verify
     uses: ./.github/workflows/debian.yml
+    with:
+      alpha_tag: ${{ needs.verify.outputs.alpha_tag }}
 
   native:
     name: native preview verification
+    needs: verify
     uses: ./.github/workflows/native.yml
+    with:
+      alpha_tag: ${{ needs.verify.outputs.alpha_tag }}
 
   checks:
     name: checks
@@ -48,7 +74,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Run release workspace tests
         timeout-minutes: 10
-        run: RETYPE_TEST_SESSION=terminal cargo test --workspace --locked --no-fail-fast
+        run: RETYPE_TEST_SESSION=terminal cargo test --workspace --locked --no-fail-fast -- --test-threads=4
       - name: Prepare installer test tools
         run: |
           sudo apt-get update
@@ -63,7 +89,7 @@ jobs:
 
   package:
     name: assemble unsigned preview assets
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.unsigned_alpha
     needs: [native, debian]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -88,6 +114,64 @@ jobs:
             dist/install.ps1.sha256
             dist/SHA256SUMS
           if-no-files-found: error
+
+  alpha-draft:
+    name: stage unsigned CLI alpha draft
+    if: github.event_name == 'workflow_dispatch' && inputs.unsigned_alpha
+    needs: [verify, checks, native, debian]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: unsigned-alpha-${{ needs.verify.outputs.alpha_tag }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: retype-preview-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the three required archives
+        env:
+          TAG: ${{ needs.verify.outputs.alpha_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir alpha
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
+            archive="retype-$TAG-$target.tar.gz"
+            cp -- "dist/$archive" "dist/$archive.sha256" alpha/
+          done
+          bash scripts/assemble-release.sh --archives-only alpha
+      - name: Create an unpublished prerelease draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.alpha_tag }}
+        working-directory: alpha
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG" |
+            jq -e --arg ref "refs/tags/$TAG" 'all(.[]; .ref != $ref)' >/dev/null; then
+            echo "Could not confirm that $TAG is unused." >&2
+            exit 1
+          fi
+          gh release create "$TAG" --draft --prerelease --target "$GITHUB_SHA" \
+            --title "Retype ${TAG#v} (unsigned CLI alpha)" --notes-file - ./*.tar.gz SHA256SUMS <<'NOTES'
+          This alpha provides the Retype CLI and daemon as manual downloads for Debian 13 amd64,
+          Windows amd64, and macOS 15 on Apple silicon. Extract the matching archive, keep `bin/`
+          and `share/` together, and run `bin/retype --version` or `bin/retype.exe --version`.
+          Install any external converters separately.
+
+          SHA256SUMS covers download integrity. The macOS executable has an ad-hoc signature.
+          Windows and macOS may warn when opening a downloaded executable. A source build is available
+          for systems that require a trusted publisher. Desktop installation and integration
+          are outside the scope of this alpha.
+          NOTES
 
   publish:
     name: publish signed release

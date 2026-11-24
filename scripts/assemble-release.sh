@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Assemble verified build archives and installers in a private release directory.
+# Assemble checksums and, where applicable, installers in a private release directory.
 set -euo pipefail
 
 embed_options=()
-if [ "${1:-}" = --signed ]; then
+archives_only=false
+case ${1:-} in
+--signed)
 	embed_options=(--signed)
 	shift
-fi
+	;;
+--archives-only)
+	archives_only=true
+	shift
+	;;
+esac
 if [ "$#" -ne 1 ]; then
-	printf 'Usage: %s [--signed] <release-directory>\n' "$0" >&2
+	printf 'Usage: %s [--signed | --archives-only] <release-directory>\n' "$0" >&2
 	exit 2
 fi
 
@@ -35,9 +42,13 @@ for file in install.sh install.ps1 install.sh.sha256 install.ps1.sha256 SHA256SU
 	fi
 done
 
-python3 "$root/scripts/embed-trust.py" "${embed_options[@]}" "$root/packaging/install.sh" install.sh
-python3 "$root/scripts/embed-trust.py" "${embed_options[@]}" "$root/packaging/install.ps1" install.ps1
-sha256sum -- *.tar.gz install.sh install.ps1 > SHA256SUMS
-sha256sum -- install.sh > install.sh.sha256
-sha256sum -- install.ps1 > install.ps1.sha256
+assets=(*.tar.gz)
+if ! $archives_only; then
+	python3 "$root/scripts/embed-trust.py" "${embed_options[@]}" "$root/packaging/install.sh" install.sh
+	python3 "$root/scripts/embed-trust.py" "${embed_options[@]}" "$root/packaging/install.ps1" install.ps1
+	sha256sum -- install.sh > install.sh.sha256
+	sha256sum -- install.ps1 > install.ps1.sha256
+	assets+=(install.sh install.ps1)
+fi
+sha256sum -- "${assets[@]}" > SHA256SUMS
 sha256sum --check SHA256SUMS

@@ -2,7 +2,7 @@
 
 Rename the extension, the file converts.
 
-Status: pre-alpha. The manual marks which behaviour has landed.
+The CLI alpha is in preparation. The manual marks which behaviour has landed.
 
 ## What it will be
 
@@ -25,6 +25,8 @@ Other desktop OS and architecture combinations are best effort, not qualificatio
 
 Two tiers exist, and the difference is deliberate. Pre-release installers are a
 convenience on top of the source tier, not a third tier.
+
+The unsigned CLI alpha is a manual archive download from [GitHub Releases](https://github.com/LapilliWorks/retype/releases) once published. Extract the archive for your platform and keep `bin/` and `share/` together. See [alpha packaging](packaging/README.md#unsigned-cli-alpha) for available targets and checksums.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
   URI scheme, user service. External tools are acquired separately. Supported

@@ -55,6 +55,15 @@ fi
 	cmp -- "$root/packaging/install.ps1" install.ps1
 )
 
+fixture "$tmp/archives-only"
+bash "$root/scripts/assemble-release.sh" --archives-only "$tmp/archives-only"
+(
+	cd "$tmp/archives-only"
+	sha256sum --check SHA256SUMS
+	[ "$(wc -l < SHA256SUMS)" -eq 2 ]
+	[ ! -e install.sh ] && [ ! -e install.ps1 ]
+)
+
 fixture "$tmp/corrupted"
 printf 'altered\n' > "$tmp/corrupted/$second"
 expect_failure corrupted

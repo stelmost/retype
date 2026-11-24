@@ -2,6 +2,10 @@ name: Native macOS and Windows preview verification
 
 on:
   workflow_call:
+    inputs:
+      alpha_tag:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -13,6 +17,7 @@ jobs:
     continue-on-error: ${{ !matrix.required }}
     timeout-minutes: 90
     env:
+      ALPHA_TAG: ${{ inputs.alpha_tag }}
       CARGO_BUILD_JOBS: '4'
       RETYPE_TEST_TIMEOUT_SECONDS: '900'
     strategy:
@@ -150,8 +155,17 @@ jobs:
           set -euo pipefail
           rustc -vV | grep -qx 'host: ${{ matrix.target }}'
           cargo build --release --locked -p retype-cli --bin retype
-          target/release/retype --version
-          target/release/retype fidelity --pair png:jpg --pair png:webp --state-dir "$RUNNER_TEMP/retype-fidelity" --write "$RETYPE_TEST_REPORT_DIR/fidelity.toml" --fixtures fixtures/fidelity > "$RETYPE_TEST_REPORT_DIR/fidelity.log" 2>&1
+          binary=target/release/retype
+          if [ -n "$ALPHA_TAG" ] && [ '${{ matrix.target }}' = aarch64-apple-darwin ]; then
+            name="retype-$ALPHA_TAG-aarch64-apple-darwin"
+            mkdir -p "dist/$name/bin"
+            cp -p "$binary" "dist/$name/bin/retype"
+            binary="dist/$name/bin/retype"
+            /usr/bin/codesign --force --sign - --identifier com.lapilliworks.retype.cli "$binary"
+          fi
+          "$binary" --version
+          "$binary" fidelity --pair png:jpg --pair png:webp --state-dir "$RUNNER_TEMP/retype-fidelity" \
+            --write "$RETYPE_TEST_REPORT_DIR/fidelity.toml" --fixtures fixtures/fidelity > "$RETYPE_TEST_REPORT_DIR/fidelity.log" 2>&1
       - name: Build fresh unsigned macOS notifier bundle
         if: runner.os == 'macOS'
         shell: bash
@@ -163,6 +177,27 @@ jobs:
           bundle_version=${bundle_version%%-*}
           bash packaging/macos/build.sh target/release/retype "$RETYPE_TEST_REPORT_DIR/preview/retype.app" "$bundle_version" '${{ matrix.target }}'
           cmp target/release/retype "$RETYPE_TEST_REPORT_DIR/preview/retype.app/Contents/Resources/retype"
+      - name: Package and smoke-test the macOS alpha CLI archive
+        if: matrix.target == 'aarch64-apple-darwin' && inputs.alpha_tag != ''
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          name="retype-$ALPHA_TAG-aarch64-apple-darwin"
+          package="dist/$name"
+          mkdir -p "$package/share/retype/fixtures"
+          cp "$RETYPE_TEST_REPORT_DIR/fidelity.toml" "$package/share/retype/"
+          cp -R fixtures/fidelity "$package/share/retype/fixtures/"
+          cp README.md LICENSE "$package/"
+          /usr/bin/tar --no-mac-metadata --no-xattrs -czf "$package.tar.gz" -C dist "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          smoke=$(mktemp -d "$RUNNER_TEMP/retype-alpha.XXXXXX")
+          /usr/bin/tar -xzf "$package.tar.gz" -C "$smoke"
+          binary="$smoke/$name/bin/retype"
+          cmp "$package/bin/retype" "$binary"
+          cmp "$RETYPE_TEST_REPORT_DIR/fidelity.toml" "$smoke/$name/share/retype/fidelity.toml"
+          /usr/bin/codesign --verify --strict "$binary"
+          [ "$("$binary" --version)" = "retype ${ALPHA_TAG#v}" ]
       - name: Build Windows CLI and Review launcher and earn fidelity evidence
         if: runner.os == 'Windows'
         shell: pwsh
@@ -177,7 +212,13 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: |
-          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME } else { $version = 'v0.1.0-dev-' + $env:GITHUB_SHA.Substring(0, 7) }
+          if ($env:ALPHA_TAG) {
+            $version = $env:ALPHA_TAG
+          } elseif ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME
+          } else {
+            $version = 'v0.1.0-dev-' + $env:GITHUB_SHA.Substring(0, 7)
+          }
           $name = 'retype-' + $version + '-${{ matrix.target }}'
           New-Item -ItemType Directory -Path "dist/$name/bin", "dist/$name/share/retype/fixtures" | Out-Null
           Copy-Item -LiteralPath 'target/release/retype.exe', 'target/release/retype-review.exe' -Destination "dist/$name/bin/"
@@ -215,8 +256,8 @@ jobs:
           name: native-preview-${{ matrix.platform }}
           path: ${{ env.RETYPE_TEST_REPORT_DIR }}
           if-no-files-found: error
-      - name: Upload checked Windows unsigned preview CLI/data archive
-        if: runner.os == 'Windows'
+      - name: Upload checked preview CLI/data archive
+        if: runner.os == 'Windows' || (matrix.target == 'aarch64-apple-darwin' && inputs.alpha_tag != '')
         uses: actions/upload-artifact@v4
         with:
           name: retype-preview-${{ matrix.target }}

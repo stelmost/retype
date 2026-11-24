@@ -2,6 +2,10 @@ name: Debian stable qualification
 
 on:
   workflow_call:
+    inputs:
+      alpha_tag:
+        type: string
+        default: ''
   workflow_dispatch:
 
 permissions:
@@ -87,9 +91,17 @@ jobs:
       - name: Package and check installed archive
         shell: bash
         timeout-minutes: 10
+        env:
+          ALPHA_TAG: ${{ inputs.alpha_tag }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" = tag ]; then version=$GITHUB_REF_NAME; else version=v0.1.0-dev-${GITHUB_SHA:0:7}; fi
+          if [ -n "$ALPHA_TAG" ]; then
+            version=$ALPHA_TAG
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=v0.1.0-dev-${GITHUB_SHA:0:7}
+          fi
           name="retype-$version-${{ matrix.target }}"
           mkdir -p "dist/$name/bin" "dist/$name/share/retype/fixtures"
           cp target/release/retype "dist/$name/bin/"

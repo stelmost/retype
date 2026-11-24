@@ -110,16 +110,16 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 
 | Platform | Requirement | When |
 |---|---|---|
-| macOS | Developer ID, hardened runtime, notarisation for every distributed binary | Before the first published binary |
-| Windows | Authenticode, independently pinned publisher certificate and secure timestamp; existing stable certificate is the provisional signing selector | Before tagged publication |
-| Linux | Publisher-signed `SHA256SUMS.minisig` and checksums | Before tagged publication |
+| macOS | Developer ID, hardened runtime and notarisation | Before signed installed publication |
+| Windows | Authenticode, independently pinned publisher certificate and secure timestamp; existing stable certificate is the provisional signing selector | Before signed installed publication |
+| Linux | Publisher-signed `SHA256SUMS.minisig` and checksums | Before signed installed publication |
 | Toolchain, Windows | Authenticode with a secure timestamp on every artifact | With the first managed artifact |
 | Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
 | Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
 Publisher identity is fixed: Lapilli Works LLC. The GUI is `com.lapilliworks.retype`, the CLI is `com.lapilliworks.retype.cli`, and a standalone notifier is `com.lapilliworks.retype.notifier`. The display name is `retype`. Reputation is bound to the publisher identity, so it is never changed casually.
 
-All tagged archives and generated standalone installer closure require the final publisher-signed `SHA256SUMS.minisig`. Canonical verifier blocks are embedded from trusted source before checksums; no downloaded verifier is bootstrapped. Publisher keys, native certificate/Team pins and existing signing selectors must be independently approved, not inferred from downloaded assets or test fixtures. Both macOS app and CLI use the fixed `com.lapilliworks.retype.cli` identifier. Manual dispatch produces non-publishing preview artifacts; checksums and GitHub attestations do not authenticate the publisher and cannot satisfy the installed tier.
+Signed archives and their standalone installers require the final publisher-signed `SHA256SUMS.minisig`. Canonical verifier blocks are embedded from trusted source before checksums. Publisher keys, native certificate/Team pins and existing signing selectors must be independently approved. Both macOS app and CLI use the fixed `com.lapilliworks.retype.cli` identifier. The [unsigned CLI alpha](../../packaging/README.md#unsigned-cli-alpha) is a manual download with SHA-256 checksums. The macOS alpha executable has an ad-hoc signature. Installed-tier qualification requires publisher trust.
 
 The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 
