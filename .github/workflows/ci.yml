@@ -3,7 +3,13 @@ name: ci
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - 'sites/**'
+      - 'docs/**'
   pull_request:
+    paths-ignore:
+      - 'sites/**'
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
@@ -90,20 +96,3 @@ jobs:
       - run: python3 scripts/embed-trust.py --check packaging/install.sh
       - run: python3 scripts/embed-trust.py --check packaging/install.ps1
       - run: timeout --kill-after=5s 30s bash tests/release.sh
-
-  site:
-    name: site checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - run: node sites/lib/checks.mjs
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      # Cloudflare Pages builds the bundle with this same command, so a docs build
-      # that breaks fails here rather than in the Pages log.
-      - name: Build the bundle
-        env:
-          SITE_RUNTIME: host
-        run: sites/bin/bundle.sh

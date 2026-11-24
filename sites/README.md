@@ -90,7 +90,7 @@ Cloudflare Pages builds and serves the site from `master`. The project is `retyp
 
 The bundle is served from the root of the domain, so the product app keeps the default `SITE_BASE` and the manual is built with `/docs/`. A deployment under a path prefix would need `SITE_BASE` set for the product app as well.
 
-`ci.yml` builds the same bundle with the same command on every push, so a docs build that breaks fails before it reaches the default branch.
+`site.yml` checks the docs and builds the same bundle with the same command on pushes and pull requests that change `sites/`, `docs/`, either installer in `packaging/`, or the site workflow itself. Changes confined to `sites/` and `docs/` skip `ci.yml`; installer and workflow changes still run the main CI checks. Both workflows can also run manually. Release tags and manual release runs use `release.yml` independently of these path filters.
 
 ## Why not Starlight
 

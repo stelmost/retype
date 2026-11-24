@@ -1,0 +1,39 @@
+name: site
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'sites/**'
+      - 'docs/**'
+      - 'packaging/install.sh'
+      - 'packaging/install.ps1'
+      - '.github/workflows/site.yml'
+  pull_request:
+    paths:
+      - 'sites/**'
+      - 'docs/**'
+      - 'packaging/install.sh'
+      - 'packaging/install.ps1'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    name: site checks and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node sites/lib/checks.mjs
+      # Keep the build command in sync with Cloudflare Pages.
+      - name: Build the bundle
+        env:
+          SITE_RUNTIME: host
+        run: sites/bin/bundle.sh
