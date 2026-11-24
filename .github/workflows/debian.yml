@@ -17,19 +17,23 @@ jobs:
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ !matrix.required }}
     container: debian:trixie
-    timeout-minutes: 60
+    timeout-minutes: 75
+    env:
+      ALPHA_TAG: ${{ inputs.alpha_tag }}
+      ALPHA_MUSL_TARGET: >-
+        ${{ inputs.alpha_tag != '' && matrix.target == 'x86_64-unknown-linux-gnu' && matrix.musl_target || '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            typst_target: x86_64-unknown-linux-musl
+            musl_target: x86_64-unknown-linux-musl
             evidence: linux-x86_64
             required: true
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            typst_target: aarch64-unknown-linux-musl
+            musl_target: aarch64-unknown-linux-musl
             evidence: linux-arm64
             required: false
     steps:
@@ -53,13 +57,20 @@ jobs:
           typst_dir="$RUNNER_TEMP/typst-0.11.1"
           mkdir -p "$typst_dir"
           curl --fail --location --retry 3 --connect-timeout 10 --max-time 120 \
-            "https://github.com/typst/typst/releases/download/v0.11.1/typst-${{ matrix.typst_target }}.tar.xz" \
+            "https://github.com/typst/typst/releases/download/v0.11.1/typst-${{ matrix.musl_target }}.tar.xz" \
             -o "$typst_dir/typst.tar.xz"
           tar -xJf "$typst_dir/typst.tar.xz" -C "$typst_dir"
-          printf '%s\n' "$typst_dir/typst-${{ matrix.typst_target }}" >> "$GITHUB_PATH"
+          printf '%s\n' "$typst_dir/typst-${{ matrix.musl_target }}" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install the alpha musl build tools
+        if: env.ALPHA_MUSL_TARGET != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get install -y --no-install-recommends musl-tools
+          rustup target add "$ALPHA_MUSL_TARGET"
       - uses: taiki-e/install-action@v2
         with:
           tool: nextest@0.9.151
@@ -77,22 +88,12 @@ jobs:
             "$RUNNER_TEMP/retype-fidelity" "$CARGO_HOME" "$RUSTUP_HOME"
           setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
             env RETYPE_TEST_REPORT_DIR="$RUNNER_TEMP/retype-reports" ./tests/run.sh
-      - name: Build exact release executable and earn its claims
+      - name: Build, package and check Linux archives
         shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
-            cargo build --release --locked -p retype-cli --bin retype
-          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
-            target/release/retype fidelity --pair png:jpg --pair png:webp \
-            --state-dir "$RUNNER_TEMP/retype-fidelity" --write "$RETYPE_TEST_REPORT_DIR/fidelity.toml" \
-            --fixtures fixtures/fidelity > "$RETYPE_TEST_REPORT_DIR/fidelity.log" 2>&1
-      - name: Package and check installed archive
-        shell: bash
-        timeout-minutes: 10
+        timeout-minutes: 30
         env:
-          ALPHA_TAG: ${{ inputs.alpha_tag }}
+          GNU_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
           if [ -n "$ALPHA_TAG" ]; then
@@ -102,18 +103,48 @@ jobs:
           else
             version=v0.1.0-dev-${GITHUB_SHA:0:7}
           fi
-          name="retype-$version-${{ matrix.target }}"
-          mkdir -p "dist/$name/bin" "dist/$name/share/retype/fixtures"
-          cp target/release/retype "dist/$name/bin/"
-          cp "$RETYPE_TEST_REPORT_DIR/fidelity.toml" "dist/$name/share/retype/"
-          cp -R fixtures/fidelity "dist/$name/share/retype/fixtures/"
-          cp -R packaging "dist/$name/share/retype/"
-          cp README.md LICENSE "dist/$name/"
-          tar -czf "dist/$name.tar.gz" -C dist "$name"
-          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
-            python3 tests/installed.py "dist/$name.tar.gz" --preview --report "$RETYPE_TEST_REPORT_DIR/installed"
-          readelf --version-info target/release/retype > "$RETYPE_TEST_REPORT_DIR/symbols.log"
+          worker=(setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all)
+          targets=("$GNU_TARGET")
+          if [ -n "$ALPHA_MUSL_TARGET" ]; then targets+=("$ALPHA_MUSL_TARGET"); fi
+          for target in "${targets[@]}"; do
+            binary="target/$target/release/retype"
+            name="retype-$version-$target"
+            report="$RETYPE_TEST_REPORT_DIR/$target"
+            state="$RUNNER_TEMP/retype-fidelity/$target"
+            "${worker[@]}" mkdir -p "$report" "$state"
+            "${worker[@]}" cargo build --release --locked --target "$target" -p retype-cli --bin retype
+            "${worker[@]}" "$binary" fidelity --pair png:jpg --pair png:webp \
+              --state-dir "$state" --write "$report/fidelity.toml" \
+              --fixtures fixtures/fidelity > "$report/fidelity.log" 2>&1
+            readelf --version-info "$binary" > "$report/symbols.log"
+
+            mkdir -p "dist/$name/bin" "dist/$name/share/retype/fixtures"
+            cp "$binary" "dist/$name/bin/"
+            cp "$report/fidelity.toml" "dist/$name/share/retype/"
+            cp -R fixtures/fidelity "dist/$name/share/retype/fixtures/"
+            cp -R packaging "dist/$name/share/retype/"
+            cp README.md LICENSE "dist/$name/"
+            tar -czf "dist/$name.tar.gz" -C dist "$name"
+            (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+
+            if [ "$target" = "$GNU_TARGET" ]; then
+              "${worker[@]}" python3 tests/installed.py "dist/$name.tar.gz" --preview --report "$report/installed"
+              continue
+            fi
+            smoke=$("${worker[@]}" mktemp -d /tmp/retype-alpha.XXXXXX)
+            "${worker[@]}" tar -xzf "dist/$name.tar.gz" -C "$smoke"
+            extracted="$smoke/$name/bin/retype"
+            "${worker[@]}" cmp "$binary" "$extracted"
+            "${worker[@]}" cmp "$report/fidelity.toml" "$smoke/$name/share/retype/fidelity.toml"
+            "${worker[@]}" "$extracted" --version > "$report/version.log"
+            grep -Fx "retype ${ALPHA_TAG#v}" "$report/version.log"
+            "${worker[@]}" readelf --program-headers --wide "$extracted" > "$report/program-headers.log"
+            "${worker[@]}" readelf --dynamic --wide "$extracted" > "$report/dynamic.log"
+            if grep -E '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' "$report/program-headers.log" "$report/dynamic.log"; then
+              echo 'The musl alpha executable must be statically linked.' >&2
+              exit 1
+            fi
+          done
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -125,6 +156,14 @@ jobs:
         with:
           name: retype-preview-${{ matrix.target }}
           path: |
-            dist/*.tar.gz
-            dist/*.sha256
+            dist/*-${{ matrix.target }}.tar.gz
+            dist/*-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: env.ALPHA_MUSL_TARGET != ''
+        with:
+          name: retype-preview-${{ env.ALPHA_MUSL_TARGET }}
+          path: |
+            dist/*-${{ env.ALPHA_MUSL_TARGET }}.tar.gz
+            dist/*-${{ env.ALPHA_MUSL_TARGET }}.tar.gz.sha256
           if-no-files-found: error

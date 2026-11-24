@@ -10,7 +10,7 @@ A file watcher and a command line tool that convert a file when you rename its
 extension. `photo.heic` becomes `photo.jpg`, and the bytes follow the name.
 Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
-- Initial release: Debian 13 amd64, macOS 15 arm64, Windows 10 22H2 amd64
+- CLI alpha downloads for Linux x86-64 (GNU and musl), macOS 15 arm64, and Windows x86-64
 - Local only: no upload, no account, no telemetry
 - Scriptable, with the same intent string accepted by the filename, the command
   line and the editor

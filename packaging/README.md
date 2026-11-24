@@ -27,7 +27,7 @@ Debian qualification runs independently of Windows/macOS failures. Publication r
 
 ## Release pipeline
 
-Current Debian stable is the Linux support baseline, currently Debian 13 (trixie), with glibc 2.41. The older Debian 11/glibc 2.31 target is retired. Other distributions may run the binary but do not carry a support commitment. Builds and converter evidence must be checked in the stable userspace.
+The signed Linux installer targets Debian 13 (trixie), with glibc 2.41. The older Debian 11/glibc 2.31 target is retired. Builds and converter evidence must be checked in the stable userspace.
 
 The current required targets are defined in [Platforms](../docs/reference/platforms.md#1-support-matrix). Other desktop combinations are best effort, not qualification gates. The first signed handoff publishes only the three required archives; other targets remain previews.
 
@@ -46,9 +46,16 @@ Manual dispatch assembles `retype-preview-*` artifacts. The `unsigned_alpha` opt
 
 ### Unsigned CLI alpha
 
-Run the `release` workflow on the alpha branch with `unsigned_alpha` enabled. It checks that the workspace has an alpha version, builds and tests that commit, verifies the three required archives, and stages an unpublished GitHub prerelease draft targeting that commit. The draft contains only the three archives and `SHA256SUMS`. Review the results and publish the draft from GitHub Releases.
+Run the `release` workflow on the alpha branch with `unsigned_alpha` enabled. It checks that the workspace has an alpha version, builds and tests that commit, verifies the four required archives, and stages an unpublished GitHub prerelease draft targeting that commit. The draft contains the archives and `SHA256SUMS`. Review the results and publish the draft from GitHub Releases.
 
-Download and extract the archive for Debian 13 amd64, Windows amd64, or macOS 15 on Apple silicon. Keep `bin/` and `share/` together and run `bin/retype --version` or `bin/retype.exe --version`. The macOS archive contains an ad-hoc-signed CLI, which the workflow tests after extraction. Windows and macOS may warn about or block a downloaded executable. The source build remains available. The alpha covers the CLI and daemon. Signed desktop installation has its own qualification below.
+| Archive target | Platform |
+|---|---|
+| `x86_64-unknown-linux-gnu` | Linux x86-64 with glibc 2.41 or newer |
+| `x86_64-unknown-linux-musl` | Linux x86-64 with a statically linked CLI |
+| `x86_64-pc-windows-msvc` | Windows x86-64 |
+| `aarch64-apple-darwin` | macOS 15 on Apple silicon |
+
+Extract the archive, keep `bin/` and `share/` together, and run `bin/retype --version` or `bin/retype.exe --version`. Install any external converters separately. The macOS archive contains an ad-hoc-signed CLI, which the workflow tests after extraction. Windows and macOS may warn about or block a downloaded executable. The source build remains available. The alpha covers the CLI and daemon. Signed desktop installation has its own qualification below.
 
 ### Signed candidate handoff
 
