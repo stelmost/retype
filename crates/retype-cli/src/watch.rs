@@ -313,6 +313,8 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 				let previous_boot = crate::daemon::lifecycle::read(state_dir)?.boot;
 				match crate::client::connect_or_spawn(state_dir, true) {
 					Ok(client) => client,
+					/* A replacement can die while the startup poll is exchanging its greeting. */
+					Err(crate::error::Error::Client(error)) if error.is_connection_closed() => continue,
 					Err(error @ crate::error::Error::DaemonStartFailed(..))
 						if crate::daemon::lifecycle::read(state_dir)?.boot != previous_boot =>
 					{

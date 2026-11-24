@@ -1,6 +1,8 @@
 //! Reconnect budgets and explicit-stop intent use real disposable daemons.
 #![cfg(unix)]
 use std::fs;
+use std::io::BufReader;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -15,6 +17,8 @@ impl Fixture {
 		let state = dir.path().join("state");
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
+		/* Lifecycle tests need a registration, without allocating OS filesystem watchers. */
+		retype_core::watches::set_paused(&state, &photos, true, true).unwrap();
 		let config = dir.path().join("config.toml");
 		fs::write(&config, "version = 'retype-config-1'\n[notify]\nenabled = false\n").unwrap();
 		let follower = Command::new(env!("CARGO_BIN_EXE_retype"))
@@ -32,27 +36,40 @@ impl Fixture {
 			.unwrap();
 		Self { dir, state, follower }
 	}
+	fn diagnostics(&self) -> String {
+		["errors", "events", "state/lifecycle.json", "state/daemon.log"]
+			.map(|name| {
+				let contents = fs::read_to_string(self.dir.path().join(name)).unwrap_or_else(|error| error.to_string());
+				format!("{name}: {contents}")
+			})
+			.join("\n")
+	}
 	fn ready(&mut self, previous: Option<u32>) -> u32 {
 		let deadline = Instant::now() + Duration::from_secs(12);
 		loop {
 			if let Ok(mut client) = retype_cli::client::connect(&self.state) {
 				let status = client.status().unwrap();
 				if previous != Some(status.pid)
+					&& (previous.is_some()
+						|| fs::read_to_string(self.dir.path().join("events"))
+							.unwrap()
+							.contains("\"watch-status\""))
 					&& status
 						.watches
 						.first()
-						.is_some_and(|watch| watch.status.as_deref() == Some("ready"))
+						.is_some_and(|watch| watch.status.as_deref() == Some("paused"))
 				{
 					return status.pid;
 				}
 			}
+			if let Some(status) = self.follower.try_wait().unwrap() {
+				panic!("follower stopped ({status}): {}", self.diagnostics());
+			}
 			assert!(
-				self.follower.try_wait().unwrap().is_none(),
-				"follower stopped: {}\n{}",
-				fs::read_to_string(self.dir.path().join("errors")).unwrap(),
-				fs::read_to_string(self.dir.path().join("events")).unwrap()
+				Instant::now() < deadline,
+				"daemon did not reconnect: {}",
+				self.diagnostics()
 			);
-			assert!(Instant::now() < deadline, "daemon did not reconnect");
 			std::thread::sleep(Duration::from_millis(50));
 		}
 	}
@@ -128,11 +145,26 @@ fn a_clean_explicit_stop_does_not_respawn_the_daemon() {
 	);
 }
 
+fn receive_greeting(listener: &UnixListener) -> UnixStream {
+	let deadline = Instant::now() + Duration::from_secs(5);
+	let stream = loop {
+		match listener.accept() {
+			Ok((stream, _)) => break stream,
+			Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+				std::thread::sleep(Duration::from_millis(5));
+			}
+			Err(error) => panic!("follower did not connect: {error}"),
+		}
+	};
+	stream.set_nonblocking(false).unwrap();
+	stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+	let hello = retype_ipc::read_frame(&mut BufReader::new(&stream)).unwrap().unwrap();
+	assert_eq!(hello["method"], "hello");
+	stream
+}
+
 #[test]
 fn a_greeting_closed_during_shutdown_still_checks_for_an_explicit_stop() {
-	use std::io::BufReader;
-	use std::os::unix::net::UnixListener;
-
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path();
 	let endpoint = retype_cli::state::socket_path(state).unwrap();
@@ -142,25 +174,40 @@ fn a_greeting_closed_during_shutdown_still_checks_for_an_explicit_stop() {
 	retype_cli::daemon::lifecycle::begin(state).unwrap();
 	retype_cli::daemon::lifecycle::stopping(state).unwrap();
 	std::thread::scope(|scope| {
-		let daemon = scope.spawn(|| {
-			let deadline = Instant::now() + Duration::from_secs(5);
-			let stream = loop {
-				match listener.accept() {
-					Ok((stream, _)) => break stream,
-					Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
-						std::thread::sleep(Duration::from_millis(5));
-					}
-					Err(error) => panic!("follower did not connect: {error}"),
-				}
-			};
-			stream.set_nonblocking(false).unwrap();
-			stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-			let hello = retype_ipc::read_frame(&mut BufReader::new(stream)).unwrap().unwrap();
-			assert_eq!(hello["method"], "hello");
-		});
+		let daemon = scope.spawn(|| drop(receive_greeting(&listener)));
 		let error = retype_cli::watch::follow(state, &[state.to_str().unwrap().to_string()], true, true).unwrap_err();
 		daemon.join().unwrap();
 		assert!(error.to_string().contains("explicitly stopped"), "{error}");
 	});
+	assert!(!state.join("daemon.log").exists());
+}
+
+#[test]
+fn replacement_greeting_failures_still_exhaust_the_shared_restart_budget() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path();
+	let endpoint = retype_cli::state::socket_path(state).unwrap();
+	let listener = UnixListener::bind(&endpoint).unwrap();
+	listener.set_nonblocking(true).unwrap();
+	retype_cli::state::publish_endpoint(state, endpoint.to_str().unwrap()).unwrap();
+	retype_cli::daemon::lifecycle::begin(state).unwrap();
+	std::thread::scope(|scope| {
+		let daemon = scope.spawn(|| {
+			for greeting in 0..5 {
+				let stream = receive_greeting(&listener);
+				/* The startup poll reaches replacements on the second and fourth connections. */
+				if matches!(greeting, 1 | 3) {
+					retype_cli::daemon::lifecycle::begin(state).unwrap();
+				}
+				drop(stream);
+			}
+		});
+		let error = retype_cli::watch::follow(state, &[state.to_str().unwrap().to_string()], true, true).unwrap_err();
+		daemon.join().unwrap();
+		assert!(error.to_string().contains("three crashes"), "{error}");
+	});
+	let lifecycle = retype_cli::daemon::lifecycle::read(state).unwrap();
+	assert_eq!(lifecycle.unknown, 3);
+	assert_eq!(lifecycle.counted_boot.as_ref(), Some(&lifecycle.boot));
 	assert!(!state.join("daemon.log").exists());
 }
