@@ -237,6 +237,12 @@ try {
 	foreach ($relative in @('watches.toml', 'jobs.jsonl', 'recovery/request.json', 'recovery/original.bin')) {
 		[IO.File]::WriteAllText((Join-Path $State $relative), 'retained user data: ' + $relative)
 	}
+	$alternateTools = Join-Path $Temp 'alternate-tools'
+	New-Item -ItemType Directory -Path $alternateTools | Out-Null
+	$tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+	Copy-Item -LiteralPath $tar.Source -Destination (Join-Path $alternateTools 'tar.exe')
+	$env:PATH += ";$alternateTools"
+	Check 'Fixture exposes multiple tar applications' (@(Get-Command tar.exe -CommandType Application -All).Count -ge 2)
 	Pack-Release 'initial'
 	$env:RETYPE_PREFIX = $Prefix; $env:RETYPE_TARGET = $Target; $env:RETYPE_VERSION = 'latest'
 	$env:RETYPE_RELEASE_BASE = 'https://local-release.invalid'; $env:RETYPE_STATE_DIR = $State; $env:RETYPE_CONFIG = $Config

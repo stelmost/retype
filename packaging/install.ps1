@@ -486,7 +486,7 @@ function Assert-RetypeWindowsTrust {
 				Invoke-WebRequest -UseBasicParsing -Uri "$Base/SHA256SUMS.minisig" -OutFile $signaturePath
 		Assert-RetypeReleaseTrust -Archive $archivePath -Checksums $sumsPath -Signature $signaturePath -PublicKey $publisherKey
 			}
-			$tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop
+			$tar = Get-Command tar.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
 			$members = @(& $tar.Source -tzf $archivePath)
 			if ($LASTEXITCODE -ne 0) { throw 'Could not list the release archive.' }
 			$seen = @{}
