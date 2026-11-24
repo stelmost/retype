@@ -52,10 +52,10 @@ fn open_review(state_dir: &Path, id: &JobId) -> Result<()> {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn open_review(_: &Path, _: &JobId) -> Result<()> {
-	Err(
+	Err(crate::error::Error::Core(
 		retype_core::error::Diagnostic::global(Code::Unsupported, "desktop Review is unavailable on this platform")
 			.into(),
-	)
+	))
 }
 
 #[cfg(test)]
