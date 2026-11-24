@@ -4,7 +4,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -22,11 +22,9 @@ struct Daemon {
 
 impl Daemon {
 	fn start(job: Option<Job>) -> Self {
-		let evidence = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/windows-pipe-progress");
-		fs::create_dir_all(&evidence).unwrap();
 		let directory = tempfile::Builder::new()
-			.prefix("native-")
-			.tempdir_in(evidence.canonicalize().unwrap())
+			.prefix("retype-pipe-progress-")
+			.tempdir()
 			.unwrap();
 		let state = directory.path().join("state");
 		let config = directory.path().join("config.toml");

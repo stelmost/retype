@@ -64,8 +64,14 @@ jobs:
           $report = Join-Path $env:SystemDrive 'retype-reports'
           $scratch = Join-Path $env:SystemDrive 'retype-temp'
           if ((Get-Volume -DriveLetter $env:SystemDrive.TrimEnd(':')).FileSystem -ne 'NTFS') { throw 'Native cleanup tests require NTFS scratch storage.' }
-          [IO.Directory]::CreateDirectory($report) | Out-Null
-          [IO.Directory]::CreateDirectory($scratch) | Out-Null
+          # Test files need an inheritable private ACL on the hosted runner.
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $acl = [Security.AccessControl.DirectorySecurity]::new()
+          $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+          foreach ($path in @($report, $scratch)) {
+            if (Test-Path -LiteralPath $path) { throw "Expected a fresh test directory: $path" }
+            [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($path), $acl)
+          }
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "RETYPE_TEST_REPORT_DIR=$report" -Encoding utf8
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "RETYPE_TEST_TEMP_DIR=$scratch" -Encoding utf8
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "TEMP=$scratch`nTMP=$scratch" -Encoding utf8
