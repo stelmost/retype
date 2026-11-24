@@ -231,6 +231,7 @@ try {
 	$SourceBinary = Join-Path $Release 'bin\retype.exe'
 	$SourceAsset = Join-Path $Release 'share\retype\fidelity.toml'
 	Copy-Item -LiteralPath $Binary -Destination $SourceBinary
+	Copy-Item (Join-Path $Root 'README.md'), (Join-Path $Root 'LICENSE') $Release
 	Copy-Item (Join-Path $Root 'packaging\windows\shortcut.ps1') (Join-Path $Release 'share\retype\packaging\windows\shortcut.ps1')
 	[IO.File]::WriteAllText($SourceAsset, 'asset A')
 	[IO.File]::WriteAllText($Config, 'user configuration, never overwritten')
@@ -256,10 +257,16 @@ try {
 	Check 'Preview preserves user PATH discovery but installs no URI, identity or startup integration' ($Writes -eq 1 -and $Registry.Count -eq 0 -and
 		$null -eq $Run -and -not (Test-Path (Join-Path $Programs 'retype.lnk')) -and $UserPath.StartsWith((Join-Path $Prefix 'bin') + ';'))
 	Check 'Preview installs the exact packaged executable' ((Hash (Join-Path $Prefix 'bin\retype.exe')) -eq (Hash $Binary))
+	foreach ($name in @('README.md', 'LICENSE')) {
+		Check "Preview installs the exact packaged $name" ((Hash (Join-Path $Prefix $name)) -eq (Hash (Join-Path $Release $name)))
+	}
 	$env:RETYPE_ACTION = 'remove'
 	& $Installer
 	Check 'Preview removal retains assets/data and removes only its owned PATH token' ((Test-Path (Join-Path $Prefix 'share\retype\fidelity.toml')) -and
 		(Test-Path $Config) -and (Test-Path (Join-Path $State 'recovery/original.bin')) -and $Writes -eq 2 -and $UserPath -ceq 'C:\first;;C:\last')
+	foreach ($name in @('README.md', 'LICENSE')) {
+		Check "Preview removal retains the packaged $name" ((Hash (Join-Path $Prefix $name)) -eq (Hash (Join-Path $Release $name)))
+	}
 
 	$Prefix = Join-Path $Temp "installed's files"; $env:RETYPE_PREFIX = $Prefix
 	$State = Join-Path $Prefix 'share\retype\user-state'; $Config = Join-Path $Prefix 'user-config.toml'

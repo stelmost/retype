@@ -143,6 +143,7 @@ function Assert-RetypeWindowsTrust {
 
 	function Get-RetypeOwnedPath([string]$Relative) {
 		if ((-not $executableSubsystems.Contains($Relative) -and
+			$Relative -notin @('README.md', 'LICENSE') -and
 			$Relative -notmatch '^share/retype/(fidelity\.toml|fixtures/fidelity/[A-Za-z0-9._/-]+|packaging/[A-Za-z0-9._/-]+)$') -or
 			@($Relative -split '/' | Where-Object { $_ -in @('', '.', '..') -or $_.EndsWith('.') }).Count) {
 			throw "Invalid installed-file inventory entry: $Relative"
