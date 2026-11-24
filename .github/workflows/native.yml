@@ -159,7 +159,8 @@ jobs:
         timeout-minutes: 20
         run: |
           set -euo pipefail
-          rustc -vV | grep -qx 'host: ${{ matrix.target }}'
+          # Consume all compiler output so pipefail cannot report an early reader's SIGPIPE.
+          rustc -vV | grep -x 'host: ${{ matrix.target }}' > /dev/null
           cargo build --release --locked -p retype-cli --bin retype
           binary=target/release/retype
           if [ -n "$ALPHA_TAG" ] && [ '${{ matrix.target }}' = aarch64-apple-darwin ]; then
