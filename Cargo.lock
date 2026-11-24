@@ -485,7 +485,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "retype-cli"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "retype-client"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "libc",
  "retype-config",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "retype-config"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "retype-core",
  "tempfile",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "retype-core"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "flate2",
  "getrandom 0.3.4",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "retype-ipc"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "retype-core",
  "serde",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "retype-macros"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "retype-watch"
-version = "0.1.0-alpha"
+version = "0.1.0-alpha.1"
 dependencies = [
  "notify",
  "retype-core",
